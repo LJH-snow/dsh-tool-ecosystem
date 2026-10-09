@@ -445,8 +445,8 @@ export class SqlError extends Error {
 
 const READ_ONLY_PREFIXES = ['select', 'explain', 'show', 'describe', 'desc', 'with', 'pragma', 'values']
 const WRITE_KEYWORDS = /\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|rename|replace|merge|call|exec|copy|vacuum|set|reset|begin|start|commit|rollback|savepoint|release|lock|unlock|load|prepare|execute|deallocate|listen|notify|handler|use|do|returning)\b/i
-const DANGEROUS_FUNCTIONS = /\b(?:set_config|setval|nextval|currval|lastval|pg_write_file|pg_read_file|pg_read_binary_file|pg_stat_file|pg_ls_dir|pg_ls_logdir|pg_ls_waldir|pg_logdir_ls|pg_execute_server_program|pg_reload_conf|pg_rotate_logfile|pg_notify|dblink_exec|dblink_connect|dblink_connect_u|dblink_send_query|lo_import|lo_export|pg_terminate_backend|pg_cancel_backend|pg_advisory_lock|pg_advisory_xact_lock|pg_try_advisory_lock|pg_try_advisory_xact_lock|pg_advisory_unlock|pg_advisory_unlock_all|pg_sleep|pg_sleep_for|pg_sleep_until|current_setting|sys_exec|sys_eval|load_file|get_lock|release_lock|sleep|benchmark)(?:\s|\/\*[\s\S]*?\*\/)*\(/i
-const DANGEROUS_CLAUSES = /\b(?:explain\s+(?:analyze\b|\([^)]*\banalyze\b)|for\s+(?:no\s+key\s+update|key\s+share|update|share)|lock\s+in\s+share\s+mode|into\s+(?:out|dump)file|load\s+data\s+(?:local\s+)?infile|into\s+(?:(?:temporary|temp|unlogged)\s+)?(?:table\s+)?(?:[A-Za-z_][A-Za-z0-9_$]*|@))\b/i
+const DANGEROUS_FUNCTIONS = /(?:^|[^A-Za-z0-9_$])(?:["`]?)(?:set_config|setval|nextval|currval|lastval|pg_write_file|pg_read_file|pg_read_binary_file|pg_stat_file|pg_ls_dir|pg_ls_logdir|pg_ls_waldir|pg_logdir_ls|pg_execute_server_program|pg_reload_conf|pg_rotate_logfile|pg_notify|dblink_exec|dblink_connect|dblink_connect_u|dblink_send_query|lo_import|lo_export|lo_create|pg_terminate_backend|pg_cancel_backend|pg_(?:try_)?advisory_(?:xact_)?(?:lock|unlock)(?:_shared|_all)?|pg_stat_reset(?:_shared|_single_table_counters)?|pg_log_backend_memory_contexts|pg_sleep|pg_sleep_for|pg_sleep_until|current_setting|sys_exec|sys_eval|load_file|get_lock|release_(?:all_)?locks?|sleep|benchmark|master_pos_wait|wait_for_executed_gtid_set)(?:["`]?)\s*\(/i
+const DANGEROUS_CLAUSES = /\b(?:explain\s+(?:analyze\b|\([^)]*\banalyze\b)|for\s+(?:no\s+key\s+update|key\s+share|update|share)|lock\s+in\s+share\s+mode|into\s+(?:out|dump)file|load\s+data\s+(?:local\s+)?infile|into\s+(?:(?:temporary|temp|unlogged)\s+)?(?:table\s+)?(?:"[^"\r\n]+"|`[^`\r\n]+`|[A-Za-z_][A-Za-z0-9_$]*|@))(?=\s|$)/i
 const DEFAULT_MAX_ROWS = 100
 const DEFAULT_MAX_COLUMNS = 100
 const DEFAULT_MAX_BYTES = 1024 * 1024
@@ -466,8 +466,8 @@ function jsonBytes(value: unknown): number {
   }
 }
 
-function isSqlCommentStart(sql: string, index: number): 'line' | 'block' | null {
-  if (sql[index] === '#') return 'line'
+function isSqlCommentStart(sql: string, index: number, hashComments: boolean): 'line' | 'block' | null {
+  if (hashComments && sql[index] === '#') return 'line'
   if (sql[index] === '-' && sql[index + 1] === '-' && /\s/.test(sql[index + 2] ?? '')) return 'line'
   if (sql[index] === '/' && sql[index + 1] === '*') return 'block'
   return null
@@ -493,16 +493,120 @@ function stripLeadingSqlTrivia(sql: string): string {
   return sql.slice(index)
 }
 
-/** Normalize comments before checking tokens that the database parser ignores. */
+interface SqlCommentMode {
+  backslashEscapes: boolean
+  hashComments: boolean
+  dollarQuotes: boolean
+  nestedBlockComments: boolean
+}
+
+/** Remove comments only when the scanner is outside quoted SQL text. */
+function stripSqlCommentsWithMode(sql: string, mode: SqlCommentMode): string {
+  let output = ''
+  let quote: '\'' | '"' | '`' | null = null
+  let dollarTag: string | null = null
+  let lineComment = false
+  let blockDepth = 0
+
+  for (let index = 0; index < sql.length; index += 1) {
+    const char = sql[index]
+    const next = sql[index + 1]
+
+    if (lineComment) {
+      if (char === '\n' || char === '\r') {
+        lineComment = false
+        output += char
+      } else {
+        output += ' '
+      }
+      continue
+    }
+
+    if (blockDepth > 0) {
+      if (mode.nestedBlockComments && char === '/' && next === '*') {
+        blockDepth += 1
+        output += '  '
+        index += 1
+      } else if (char === '*' && next === '/') {
+        blockDepth -= 1
+        output += '  '
+        index += 1
+      } else {
+        output += char === '\n' || char === '\r' ? char : ' '
+      }
+      continue
+    }
+
+    if (dollarTag) {
+      output += char
+      if (sql.startsWith(dollarTag, index)) {
+        output += sql.slice(index + 1, index + dollarTag.length)
+        index += dollarTag.length - 1
+        dollarTag = null
+      }
+      continue
+    }
+
+    if (quote) {
+      output += char
+      if (mode.backslashEscapes && char === '\\') {
+        if (next !== undefined) { output += next; index += 1 }
+      } else if (char === quote) {
+        if (next === quote) { output += next; index += 1 }
+        else quote = null
+      }
+      continue
+    }
+
+    const commentStart = isSqlCommentStart(sql, index, mode.hashComments)
+    if (commentStart === 'line') {
+      lineComment = true
+      output += ' '
+      continue
+    }
+    if (commentStart === 'block' && !sql.startsWith('/*!', index) && !/^\/\*M!/i.test(sql.slice(index))) {
+      blockDepth = 1
+      output += ' '
+      index += 1
+      continue
+    }
+
+    if (mode.dollarQuotes && char === '$') {
+      const tag = /^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/.exec(sql.slice(index))?.[0]
+      if (tag) {
+        dollarTag = tag
+        output += tag
+        index += tag.length - 1
+        continue
+      }
+    }
+
+    if (char === '\'' || char === '"' || char === '`') quote = char
+    output += char
+  }
+
+  return output
+}
+
+/** Normalize comments under PostgreSQL and MySQL quoting rules. */
 function stripSqlComments(sql: string): string {
-  return sql
-    .replace(/\/\*[\s\S]*?\*\//g, ' ')
-    .replace(/--(?=\s)[^\r\n]*(?:\r?\n|$)/g, ' ')
-    .replace(/#[^\r\n]*(?:\r?\n|$)/g, ' ')
+  const postgres = stripSqlCommentsWithMode(sql, {
+    backslashEscapes: false,
+    hashComments: false,
+    dollarQuotes: true,
+    nestedBlockComments: true,
+  })
+  const mysql = stripSqlCommentsWithMode(sql, {
+    backslashEscapes: true,
+    hashComments: true,
+    dollarQuotes: false,
+    nestedBlockComments: false,
+  })
+  return `${postgres}\n${mysql}`
 }
 
 /** Return true when a semicolon separates two executable statements. */
-function hasMultipleStatements(sql: string): boolean {
+function hasMultipleStatementsWithEscapes(sql: string, backslashEscapes: boolean, hashComments: boolean): boolean {
   let quote: '\'' | '"' | '`' | null = null
   let dollarTag: string | null = null
   let comment: 'line' | 'block' | null = null
@@ -526,7 +630,7 @@ function hasMultipleStatements(sql: string): boolean {
       continue
     }
     if (quote) {
-      if (char === '\\') { i += 1; continue }
+      if (backslashEscapes && char === '\\') { i += 1; continue }
       if (char === quote) {
         if (next === quote) { i += 1; continue }
         quote = null
@@ -534,7 +638,7 @@ function hasMultipleStatements(sql: string): boolean {
       continue
     }
 
-    const commentStart = isSqlCommentStart(sql, i)
+    const commentStart = isSqlCommentStart(sql, i, hashComments)
     if (commentStart) { comment = commentStart; if (commentStart === 'block') i += 1; continue }
     if (char === '\'' || char === '"' || char === '`') { quote = char; continue }
     if (char === '$') {
@@ -552,6 +656,16 @@ function hasMultipleStatements(sql: string): boolean {
   return executableTextAfterSeparator
 }
 
+/**
+ * Parse both PostgreSQL standard-conforming strings and MySQL backslash
+ * strings. If either interpretation sees a second executable statement, deny
+ * the query rather than letting a dialect mismatch bypass the guard.
+ */
+function hasMultipleStatements(sql: string): boolean {
+  return [true, false].some(backslashEscapes => [true, false].some(hashComments =>
+    hasMultipleStatementsWithEscapes(sql, backslashEscapes, hashComments)))
+}
+
 export function assertReadOnly(sql: string): void {
   const trimmed = sql.trim().replace(/[;\s]+$/, '')
   if (!trimmed) throw new SqlError('Empty SQL statement.', 'denied')
@@ -566,7 +680,8 @@ export function assertReadOnly(sql: string): void {
     throw new SqlError('Statement contains write keywords (INSERT/UPDATE/DELETE/DDL). Read-only mode is enforced.', 'denied')
   }
   const normalized = stripSqlComments(trimmed)
-  if (DANGEROUS_FUNCTIONS.test(normalized) || DANGEROUS_CLAUSES.test(normalized)) {
+  const withoutQuotedText = normalized.replace(/'(?:''|\\.|[^'])*'|"(?:""|[^"])*"/g, ' ')
+  if (DANGEROUS_FUNCTIONS.test(normalized) || DANGEROUS_CLAUSES.test(normalized) || /\binto\b/i.test(withoutQuotedText)) {
     throw new SqlError('Statement contains a function or clause that can mutate, lock, access files, or execute external work.', 'denied')
   }
 }

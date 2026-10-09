@@ -774,14 +774,40 @@ function asBoolean(record: Record<string, unknown>, key: string): boolean {
 }
 
 const DEFAULT_OUTPUT_MAX_BYTES = 128 * 1024
-const SENSITIVE_KEY = /(?:credential|password|passwd|secret|token|bearer|authorization|webhook|api[_-]?key|access[_-]?key|basic[_-]?auth)/i
+const SENSITIVE_KEY = /(?:credential|password|passwd|secret|token|bearer|authorization|webhook|api[_-]?key|access[_-]?key|basic[_-]?auth|client[_-]?(?:secret|certificate|cert|key)|private[_-]?(?:key|certificate|cert)|tls[_-]?(?:auth|certificate|cert|key)|http[_-]?header[_-]?value|secure[_-]?json(?:data|fields)?|oauth[_-]?(?:token|secret|client)|sigv4|azure[_-]?(?:client|secret|token)|gcp[_-]?(?:client|secret|token))/i
 
 function redactSensitiveText(value: string): string {
   let text = value
   text = text.replace(/(\bBearer\s+)[^\s,;"'}]+/gi, '$1[REDACTED]')
-  const keyValue = /((?:["']?)(?:credential|password|passwd|secret|token|bearer(?:[_-]?token)?|authorization|webhook|api[_-]?key|access[_-]?key|basic[_-]?auth)(?:["']?)\s*[:=]\s*)(["']?)([^,\s}\"']+)\2/gi
-  text = text.replace(keyValue, '$1$2[REDACTED]$2')
-  text = text.replace(/([?&](?:credential|password|passwd|secret|token|bearer(?:[_-]?token)?|authorization|webhook|api[_-]?key|access[_-]?key|basic[_-]?auth)=)[^&\s]+/gi, '$1[REDACTED]')
+  const lines = text.split(/\r?\n/)
+  let sensitiveBlockIndent = -1
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    const indent = line.match(/^\s*/)?.[0].length ?? 0
+    if (sensitiveBlockIndent >= 0) {
+      if (!line.trim()) continue
+      if (indent > sensitiveBlockIndent) {
+        lines[index] = line.slice(0, indent) + '[REDACTED]'
+        continue
+      }
+      sensitiveBlockIndent = -1
+    }
+    const blockKey = line.match(/^(\s*)(?:-\s*)?["']?secure[_-]?json(?:data|fields)?["']?\s*:/i)
+    if (!blockKey) continue
+    const colon = line.indexOf(':')
+    const valuePart = line.slice(colon + 1).trim()
+    lines[index] = line.slice(0, colon + 1) + ' [REDACTED]'
+    if (!valuePart || /^[|>]/.test(valuePart)) {
+      sensitiveBlockIndent = blockKey[1].length
+    } else if ((valuePart.startsWith('{') && !valuePart.includes('}')) || (valuePart.startsWith('[') && !valuePart.includes(']'))) {
+      sensitiveBlockIndent = blockKey[1].length
+    }
+  }
+  text = lines.join('\n')
+  const keyValue = /((?:^|[,{\s])["']?(?:credential|password|passwd|secret|token|bearer(?:[_-]?token)?|authorization|webhook|api[_-]?key|access[_-]?key|basic[_-]?auth|client[_-]?(?:secret|certificate|cert|key)|private[_-]?(?:key|certificate|cert)|tls[_-]?(?:auth|certificate|cert|key)|http[_-]?header[_-]?value\d*|secure[_-]?json(?:data|fields)?|oauth[_-]?(?:token|secret|client)|sigv4|azure[_-]?(?:client|secret|token)|gcp[_-]?(?:client|secret|token))["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|[^\s,;}\]]+)/gi
+  text = text.replace(keyValue, '$1[REDACTED]')
+  text = text.replace(/([?&](?:credential|password|passwd|secret|token|bearer(?:[_-]?token)?|authorization|webhook|api[_-]?key|access[_-]?key|basic[_-]?auth|client[_-]?(?:secret|certificate|cert|key)|private[_-]?(?:key|certificate|cert)|tls[_-]?(?:auth|certificate|cert|key)|http[_-]?header[_-]?value\d*|secure[_-]?json(?:data|fields)?|oauth[_-]?(?:token|secret|client)|sigv4|azure[_-]?(?:client|secret|token)|gcp[_-]?(?:client|secret|token))=)[^&#\s]+/gi, '$1[REDACTED]')
+  text = text.replace(/(\b[a-z][a-z\d+.-]*:\/\/)[^/\s:@]+:[^@\s/]+@/gi, '$1[REDACTED]:[REDACTED]@')
   return text
 }
 
@@ -801,7 +827,9 @@ function sanitizeValue(value: unknown, key?: string): unknown {
 function truncateUtf8(value: string, maxBytes = DEFAULT_OUTPUT_MAX_BYTES): string {
   const limit = Number.isFinite(maxBytes) ? Math.max(1, Math.floor(maxBytes)) : DEFAULT_OUTPUT_MAX_BYTES
   if (Buffer.byteLength(value, 'utf8') <= limit) return value
-  return Buffer.from(value, 'utf8').subarray(0, limit).toString('utf8')
+  let result = Buffer.from(value, 'utf8').subarray(0, limit).toString('utf8')
+  while (result && Buffer.byteLength(result, 'utf8') > limit) result = result.slice(0, -1)
+  return result
 }
 
 function safeJson(value: unknown, maxBytes = DEFAULT_OUTPUT_MAX_BYTES): string {

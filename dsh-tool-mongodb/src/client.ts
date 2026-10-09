@@ -103,7 +103,7 @@ const SAFE_FILTER_OPERATORS = new Set([
   '$nin',
 ])
 
-const SENSITIVE_KEY_PATTERN = /(?:password|passwd|passphrase|secret|token|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|authorization|cookie|credential|session|jwt|signature|encryption[_-]?key|signing[_-]?key|salt)/i
+const SENSITIVE_KEY_PATTERN = /(?:password|passwd|passphrase|passcode|pwd|secret|token|otp|api[_-]?key|access[_-]?(?:key|token)|refresh[_-]?token|consumer[_-]?key|client[_-]?secret|private[_-]?key|authorization|cookie|credential|session|jwt|signature|encryption[_-]?key|signing[_-]?key|salt)/i
 
 const NAME_PATTERN = /^[^$"\0]{1,200}$/
 

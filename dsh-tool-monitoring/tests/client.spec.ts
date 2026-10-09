@@ -20,13 +20,35 @@ function requestInit(fetchImpl: ReturnType<typeof vi.fn>, callIndex = 0): Reques
 describe('MonitoringClient', () => {
   it('redacts credentials from raw monitoring payloads and enforces an output byte limit', async () => {
     const fetchImpl = vi.fn()
-      .mockResolvedValueOnce(prom({ yaml: 'global:\n  password: prom-secret\n  bearer_token: abc123\n' }))
+      .mockResolvedValueOnce(prom({ yaml: [
+        'secureJsonData:',
+        '  providerSpecificField: raw-secure-value',
+        'secureJsonData: { providerSpecificField: inline-secure-value }',
+        'secureJsonData: {',
+        '  providerSpecificField: "multiline } secure-value",',
+        '  secondField: multiline-inline-secret',
+        '}',
+        'secureJsonData: |-',
+        '  scalar-secure-value',
+        'global:',
+        '  password: prom-secret',
+        '  bearer_token: abc123',
+        '  client_secret: client-secret-value',
+        '  tls_auth: tls-secret-value',
+        '  httpHeaderValue1: header-secret-value',
+      ].join('\n') }))
       .mockResolvedValueOnce(json([{
         uid: 'ds-1',
         name: 'Prometheus',
         type: 'prometheus',
         url: 'https://prom.example.com',
-        secureJsonData: { password: 'grafana-secret', bearerToken: 'token-xyz' },
+        secureJsonData: {
+          password: 'grafana-secret',
+          bearerToken: 'token-xyz',
+          httpHeaderValue1: 'header-datasource-secret',
+          tlsAuth: 'tls-datasource-secret',
+          nested: { tls_auth: 'nested-tls-secret' },
+        },
       }]))
       .mockResolvedValueOnce(json({
         dashboard: { uid: 'dash-1', title: 'Ops', panels: [{ targets: [{ expr: 'password=panel-secret' }] }] },
@@ -50,7 +72,7 @@ describe('MonitoringClient', () => {
     const logs = await client.lokiQueryRange('{app="api"}', { start: '1', end: '2' })
 
     for (const value of [config.configYaml, datasource.items[0].settingsJson ?? '', dashboard.dashboardJson, logs.resultJson]) {
-      expect(value).not.toMatch(/prom-secret|abc123|grafana-secret|token-xyz|panel-secret|hooks\.example\.test\/secret|loki-token|loki-secret/)
+      expect(value).not.toMatch(/prom-secret|abc123|client-secret-value|tls-secret-value|header-secret-value|raw-secure-value|inline-secure-value|multiline } secure-value|multiline-inline-secret|scalar-secure-value|grafana-secret|token-xyz|header-datasource-secret|tls-datasource-secret|nested-tls-secret|panel-secret|hooks\.example\.test\/secret|loki-token|loki-secret/)
       expect(Buffer.byteLength(value, 'utf8')).toBeLessThanOrEqual(180)
     }
   })

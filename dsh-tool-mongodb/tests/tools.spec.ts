@@ -107,4 +107,16 @@ describe('dsh-tool-mongodb tools', () => {
     await expect(remove.execute({ database: 'appdb', collection: 'users', filterJson: '{"_id":"u1"}' })).resolves.toMatchObject({ ok: false, applied: false })
     expect(access.calls).toEqual([])
   })
+
+  it('does not return raw driver write errors containing document values', async () => {
+    const access = fakeAccess({
+      insert: async () => { throw new Error('E11000 duplicate key error dup key: { email: "secret@example.com" }') },
+    })
+    const tools = createTools(new MongoDbClient({ access, allowWrites: true, allowedCollections: ['users'] }))
+    const insert = tools.find(item => item.name === 'mongo_insert_one')!
+    const result = await insert.execute({ database: 'appdb', collection: 'users', docJson: '{"email":"secret@example.com"}' })
+    expect(result).toMatchObject({ ok: false, applied: false, reason: expect.stringContaining('database rejected') })
+    expect(JSON.stringify(result)).not.toContain('secret@example.com')
+    expect(JSON.stringify(result)).not.toContain('E11000')
+  })
 })

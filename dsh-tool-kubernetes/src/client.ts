@@ -173,15 +173,58 @@ export class KubernetesError extends Error {
 const NAMESPACED_KINDS = new Set([
   'ConfigMap',
   'CronJob',
+  'ControllerRevision',
+  'DaemonSet',
   'Deployment',
+  'Endpoints',
+  'EndpointSlice',
+  'Event',
+  'HorizontalPodAutoscaler',
   'Ingress',
   'Job',
+  'Lease',
+  'LimitRange',
+  'NetworkPolicy',
   'Pod',
+  'PodDisruptionBudget',
+  'PodTemplate',
+  'PersistentVolumeClaim',
   'ReplicaSet',
+  'ReplicationController',
+  'ResourceQuota',
   'Secret',
   'Service',
   'ServiceAccount',
   'StatefulSet',
+  'Role',
+  'RoleBinding',
+])
+
+const CLUSTER_SCOPED_KINDS = new Set([
+  'APIService',
+  'CSIDriver',
+  'CSINode',
+  'CertificateSigningRequest',
+  'ClusterRole',
+  'ClusterRoleBinding',
+  'ComponentStatus',
+  'CustomResourceDefinition',
+  'FlowSchema',
+  'MutatingWebhookConfiguration',
+  'Namespace',
+  'Node',
+  'PersistentVolume',
+  'PriorityClass',
+  'PriorityLevelConfiguration',
+  'RuntimeClass',
+  'SelfSubjectAccessReview',
+  'SelfSubjectRulesReview',
+  'StorageClass',
+  'StorageVersion',
+  'SubjectAccessReview',
+  'TokenReview',
+  'ValidatingWebhookConfiguration',
+  'VolumeAttachment',
 ])
 
 const SENSITIVE_WRITE_KINDS = new Set([
@@ -199,6 +242,14 @@ const DEFAULT_LOG_TIMEOUT_MS = 15_000
 
 function isNamespacedKind(kind: string): boolean {
   return NAMESPACED_KINDS.has(kind)
+}
+
+type ResourceScope = 'namespaced' | 'cluster' | 'unknown'
+
+function resourceScope(namespace: string, kind: string): ResourceScope {
+  if (isNamespacedKind(kind) || namespace.length > 0) return 'namespaced'
+  if (CLUSTER_SCOPED_KINDS.has(kind)) return 'cluster'
+  return 'unknown'
 }
 
 function errorStatus(error: unknown): number | null {
@@ -287,26 +338,33 @@ export class KubernetesClient {
 
   canWriteResource(namespace: string, kind: string): boolean {
     if (!this.options.allowWrite) return false
-    const namespaced = isNamespacedKind(kind)
-    if (namespaced && !this.canWrite(namespace)) return false
+    const scope = resourceScope(namespace, kind)
+    if (scope === 'namespaced' && !this.canWrite(namespace)) return false
+    if (scope === 'unknown' && Boolean(this.options.writeNamespaces?.length)) return false
     const allowedKinds = this.options.writeKinds
     if (allowedKinds && allowedKinds.length > 0) return allowedKinds.includes(kind)
-    return namespaced && !SENSITIVE_WRITE_KINDS.has(kind)
+    return scope === 'namespaced' && !SENSITIVE_WRITE_KINDS.has(kind)
   }
 
   writeDisabledReason(namespace: string, kind?: string): string {
     if (!this.options.allowWrite) {
       return 'Kubernetes write tools are disabled. Set allowWrite: true in the plugin config to enable them.'
     }
-    if (kind && (!isNamespacedKind(kind) || SENSITIVE_WRITE_KINDS.has(kind))) {
-      return 'Writes for Kubernetes kind "' + kind + '" are disabled by default because it is ' + (isNamespacedKind(kind) ? 'sensitive' : 'cluster-scoped') + '. Add "' + kind + '" to writeKinds in the plugin config to explicitly allow it.'
+    const scope = kind ? resourceScope(namespace, kind) : 'namespaced'
+    if (kind && scope === 'namespaced' && !this.canWrite(namespace)) {
+      return 'Write access is not allowed for namespace "' + namespace + '". Add it to writeNamespaces in the plugin config.'
+    }
+    if (kind && scope === 'unknown' && this.options.writeNamespaces?.length) {
+      return 'Namespace must be specified for unknown Kubernetes kind "' + kind + '" when writeNamespaces is configured.'
+    }
+    if (kind && (scope !== 'namespaced' || SENSITIVE_WRITE_KINDS.has(kind))) {
+      return 'Writes for Kubernetes kind "' + kind + '" are disabled by default because it is ' + (scope === 'namespaced' ? 'sensitive' : scope === 'cluster' ? 'cluster-scoped' : 'unknown-scope') + '. Add "' + kind + '" to writeKinds in the plugin config to explicitly allow it.'
     }
     if (kind && this.options.writeKinds && this.options.writeKinds.length > 0 && !this.options.writeKinds.includes(kind)) {
       return 'Write access is not allowed for Kubernetes kind "' + kind + '". Add it to writeKinds in the plugin config.'
     }
     return 'Write access is not allowed for namespace "' + namespace + '". Add it to writeNamespaces in the plugin config.'
   }
-
 
   async listResources<T = any>(request: ListRequest): Promise<{ items: T[] }> {
     const response = await this.api().list<T>(
@@ -634,7 +692,6 @@ function parseManifests(input: string): KubernetesObject[] {
     .map(value => value as unknown as KubernetesObject)
 }
 
-
 function normalizePositiveLimit(value: number | undefined, fallback: number): number {
   if (!Number.isFinite(value) || value === undefined) return fallback
   return Math.max(1, Math.floor(value))
@@ -649,9 +706,35 @@ function normalizeTimeout(value: number | undefined, fallback: number): number {
 function redactLogText(value: string): string {
   let text = value
   text = text.replace(/(\bBearer\s+)[^\s,;]+/gi, '$1[REDACTED]')
-  const keyValue = /((?:token|password|passwd|secret|api[_-]?key|access[_-]?key|client[_-]?secret|bearer(?:[_-]?token)?|authorization)\s*[:=]\s*)(["']?)([^\s,;"']+)\2/gi
+  const lines = text.split(/\r?\n/)
+  let sensitiveBlockIndent = -1
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    const indent = line.match(/^\s*/)?.[0].length ?? 0
+    if (sensitiveBlockIndent >= 0) {
+      if (!line.trim()) continue
+      if (indent > sensitiveBlockIndent) {
+        lines[index] = line.slice(0, indent) + '[REDACTED]'
+        continue
+      }
+      sensitiveBlockIndent = -1
+    }
+    const blockKey = line.match(/^(\s*)(?:-\s*)?["']?secure[_-]?json(?:data|fields)?["']?\s*:/i)
+    if (!blockKey) continue
+    const colon = line.indexOf(':')
+    const valuePart = line.slice(colon + 1).trim()
+    lines[index] = line.slice(0, colon + 1) + ' [REDACTED]'
+    if (!valuePart || /^[|>]/.test(valuePart)) {
+      sensitiveBlockIndent = blockKey[1].length
+    } else if ((valuePart.startsWith('{') && !valuePart.includes('}')) || (valuePart.startsWith('[') && !valuePart.includes(']'))) {
+      sensitiveBlockIndent = blockKey[1].length
+    }
+  }
+  text = lines.join('\n')
+  const keyValue = /((?:^|[,{\s])["']?(?:credential|password|passwd|secret|token|bearer(?:[_-]?token)?|api[_-]?key|access[_-]?key|client[_-]?(?:secret|certificate|cert|key)|private[_-]?(?:key|certificate|cert)|tls[_-]?(?:auth|certificate|cert|key)|http[_-]?header[_-]?value\d*|authorization|basic[_-]?auth)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|[^\s,;}\]]+)/gi
   text = text.replace(keyValue, '$1[REDACTED]')
-  text = text.replace(/([?&](?:token|password|secret|api[_-]?key|access[_-]?key|authorization)=)[^&\s]+/gi, '$1[REDACTED]')
+  text = text.replace(/([?&](?:credential|password|passwd|secret|token|bearer(?:[_-]?token)?|api[_-]?key|access[_-]?key|client[_-]?(?:secret|certificate|cert|key)|private[_-]?(?:key|certificate|cert)|tls[_-]?(?:auth|certificate|cert|key)|http[_-]?header[_-]?value\d*|authorization|basic[_-]?auth)=)[^&#\s]+/gi, '$1[REDACTED]')
+  text = text.replace(/(\b[a-z][a-z\d+.-]*:\/\/)[^/\s:@]+:[^@\s/]+@/gi, '$1[REDACTED]:[REDACTED]@')
   return text
 }
 
@@ -659,5 +742,7 @@ function limitLogOutput(value: string, maxLines: number, maxBytes: number): stri
   const lines = value.split(/\r?\n/).slice(0, maxLines)
   const limited = lines.join('\n')
   if (Buffer.byteLength(limited, 'utf8') <= maxBytes) return limited
-  return Buffer.from(limited, 'utf8').subarray(0, maxBytes).toString('utf8')
+  let result = Buffer.from(limited, 'utf8').subarray(0, maxBytes).toString('utf8')
+  while (result && Buffer.byteLength(result, 'utf8') > maxBytes) result = result.slice(0, -1)
+  return result
 }

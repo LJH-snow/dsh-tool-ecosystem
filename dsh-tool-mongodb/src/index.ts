@@ -45,13 +45,20 @@ function errorReason(error: unknown): string {
   return error instanceof MongoError ? error.message : error instanceof Error ? error.message : String(error)
 }
 
+function writeErrorReason(error: unknown): string {
+  // Driver errors can include duplicate-key values, validation documents, or
+  // server-side query text. Never pass those details through a write tool.
+  if (error instanceof MongoError) return error.message
+  return 'MongoDB write failed: the database rejected the operation.'
+}
+
 function writeFailure(error: unknown, args: Record<string, unknown>) {
   return {
     ok: false,
     applied: false,
     database: typeof args.database === 'string' ? args.database : undefined,
     collection: typeof args.collection === 'string' ? args.collection : undefined,
-    reason: errorReason(error),
+    reason: writeErrorReason(error),
   }
 }
 
