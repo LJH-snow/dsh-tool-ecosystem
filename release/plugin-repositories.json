@@ -29,7 +29,7 @@
     { "name": "dsh-tool-pagerduty", "repository": "https://github.com/LJH-snow/dsh-tool-pagerduty.git" },
     { "name": "dsh-tool-redis", "repository": "https://github.com/LJH-snow/dsh-tool-redis.git" },
     { "name": "dsh-tool-sentry", "repository": "https://github.com/LJH-snow/dsh-tool-sentry.git" },
-    { "name": "dsh-tool-shopify", "repository": null },
+    { "name": "dsh-tool-shopify", "repository": "https://github.com/LJH-snow/dsh-tool-shopify.git" },
     { "name": "dsh-tool-slack", "repository": "https://github.com/LJH-snow/dsh-tool-slack.git" },
     { "name": "dsh-tool-sql", "repository": "https://github.com/LJH-snow/dsh-tool-sql.git" },
     { "name": "dsh-tool-stripe", "repository": "https://github.com/LJH-snow/dsh-tool-stripe.git" },
