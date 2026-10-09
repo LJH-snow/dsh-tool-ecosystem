@@ -1,0 +1,197 @@
+{
+  "generatedAt": "2026-10-08T16:33:10.519Z",
+  "plugins": [
+    {
+      "name": "dsh-tool-airtable",
+      "packageName": "@libai168/dsh-tool-airtable",
+      "version": "0.2.0",
+      "path": "dsh-tool-airtable"
+    },
+    {
+      "name": "dsh-tool-aws",
+      "packageName": "@libai168/dsh-tool-aws",
+      "version": "0.3.0",
+      "path": "dsh-tool-aws"
+    },
+    {
+      "name": "dsh-tool-browser",
+      "packageName": "@libai168/dsh-tool-browser",
+      "version": "0.1.0",
+      "path": "dsh-tool-browser"
+    },
+    {
+      "name": "dsh-tool-cloudflare",
+      "packageName": "@libai168/dsh-tool-cloudflare",
+      "version": "0.2.0",
+      "path": "dsh-tool-cloudflare"
+    },
+    {
+      "name": "dsh-tool-context7",
+      "packageName": "@libai168/dsh-tool-context7",
+      "version": "0.2.0",
+      "path": "dsh-tool-context7"
+    },
+    {
+      "name": "dsh-tool-discord",
+      "packageName": "@libai168/dsh-tool-discord",
+      "version": "0.2.0",
+      "path": "dsh-tool-discord"
+    },
+    {
+      "name": "dsh-tool-dockerhub",
+      "packageName": "@libai168/dsh-tool-dockerhub",
+      "version": "0.2.0",
+      "path": "dsh-tool-dockerhub"
+    },
+    {
+      "name": "dsh-tool-feishu",
+      "packageName": "@libai168/dsh-tool-feishu",
+      "version": "0.2.0",
+      "path": "dsh-tool-feishu"
+    },
+    {
+      "name": "dsh-tool-figma",
+      "packageName": "@libai168/dsh-tool-figma",
+      "version": "0.2.0",
+      "path": "dsh-tool-figma"
+    },
+    {
+      "name": "dsh-tool-firecrawl",
+      "packageName": "@libai168/dsh-tool-firecrawl",
+      "version": "0.2.0",
+      "path": "dsh-tool-firecrawl"
+    },
+    {
+      "name": "dsh-tool-github",
+      "packageName": "@libai168/dsh-tool-github",
+      "version": "0.2.1",
+      "path": "dsh-tool-github"
+    },
+    {
+      "name": "dsh-tool-gitlab",
+      "packageName": "@libai168/dsh-tool-gitlab",
+      "version": "0.2.1",
+      "path": "dsh-tool-gitlab"
+    },
+    {
+      "name": "dsh-tool-gmail",
+      "packageName": "@libai168/dsh-tool-gmail",
+      "version": "0.4.0",
+      "path": "dsh-tool-gmail"
+    },
+    {
+      "name": "dsh-tool-google-calendar",
+      "packageName": "@libai168/dsh-tool-google-calendar",
+      "version": "0.1.0",
+      "path": "dsh-tool-google-calendar"
+    },
+    {
+      "name": "dsh-tool-google-drive",
+      "packageName": "@libai168/dsh-tool-google-drive",
+      "version": "0.4.1",
+      "path": "dsh-tool-google-drive"
+    },
+    {
+      "name": "dsh-tool-jira",
+      "packageName": "@libai168/dsh-tool-jira",
+      "version": "0.3.1",
+      "path": "dsh-tool-jira"
+    },
+    {
+      "name": "dsh-tool-kubernetes",
+      "packageName": "@libai168/dsh-tool-kubernetes",
+      "version": "0.2.0",
+      "path": "dsh-tool-kubernetes"
+    },
+    {
+      "name": "dsh-tool-linear",
+      "packageName": "@libai168/dsh-tool-linear",
+      "version": "0.4.0",
+      "path": "dsh-tool-linear"
+    },
+    {
+      "name": "dsh-tool-memory",
+      "packageName": "@libai168/dsh-tool-memory",
+      "version": "0.1.0",
+      "path": "dsh-tool-memory"
+    },
+    {
+      "name": "dsh-tool-microsoft-365",
+      "packageName": "@libai168/dsh-tool-microsoft-365",
+      "version": "0.1.0",
+      "path": "dsh-tool-microsoft-365"
+    },
+    {
+      "name": "dsh-tool-mongodb",
+      "packageName": "@libai168/dsh-tool-mongodb",
+      "version": "0.2.0",
+      "path": "dsh-tool-mongodb"
+    },
+    {
+      "name": "dsh-tool-monitoring",
+      "packageName": "@libai168/dsh-tool-monitoring",
+      "version": "0.19.0",
+      "path": "dsh-tool-monitoring"
+    },
+    {
+      "name": "dsh-tool-n8n",
+      "packageName": "@libai168/dsh-tool-n8n",
+      "version": "0.4.0",
+      "path": "dsh-tool-n8n"
+    },
+    {
+      "name": "dsh-tool-notion",
+      "packageName": "@libai168/dsh-tool-notion",
+      "version": "0.4.0",
+      "path": "dsh-tool-notion"
+    },
+    {
+      "name": "dsh-tool-pagerduty",
+      "packageName": "@libai168/dsh-tool-pagerduty",
+      "version": "0.3.0",
+      "path": "dsh-tool-pagerduty"
+    },
+    {
+      "name": "dsh-tool-redis",
+      "packageName": "@libai168/dsh-tool-redis",
+      "version": "0.1.0",
+      "path": "dsh-tool-redis"
+    },
+    {
+      "name": "dsh-tool-sentry",
+      "packageName": "@libai168/dsh-tool-sentry",
+      "version": "0.2.1",
+      "path": "dsh-tool-sentry"
+    },
+    {
+      "name": "dsh-tool-shopify",
+      "packageName": "@libai168/dsh-tool-shopify",
+      "version": "0.1.0",
+      "path": "dsh-tool-shopify"
+    },
+    {
+      "name": "dsh-tool-slack",
+      "packageName": "@libai168/dsh-tool-slack",
+      "version": "0.4.0",
+      "path": "dsh-tool-slack"
+    },
+    {
+      "name": "dsh-tool-sql",
+      "packageName": "@libai168/dsh-tool-sql",
+      "version": "0.2.0",
+      "path": "dsh-tool-sql"
+    },
+    {
+      "name": "dsh-tool-stripe",
+      "packageName": "@libai168/dsh-tool-stripe",
+      "version": "0.3.0",
+      "path": "dsh-tool-stripe"
+    },
+    {
+      "name": "dsh-tool-zendesk",
+      "packageName": "@libai168/dsh-tool-zendesk",
+      "version": "0.3.1",
+      "path": "dsh-tool-zendesk"
+    }
+  ]
+}

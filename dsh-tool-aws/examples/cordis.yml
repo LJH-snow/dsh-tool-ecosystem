@@ -1,0 +1,13 @@
+# Example dsh composition config for dsh-tool-aws.
+#
+# Required: region + credentials (accessKeyId/secretAccessKey or sessionToken).
+# Optional: sessionToken for temporary credentials, endpoint for local mocking.
+
+- name: 'github:LJH-snow/dsh-tool-aws'
+  config:
+    region: 'us-east-1'
+    accessKeyId: 'AKIAXXXXXXXXXXXXXXXX'
+    secretAccessKey: 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+    # sessionToken: '...'  # temporary credentials
+    # endpoint: 'https://sts.us-east-1.amazonaws.com'  # local mocking
+    # timeoutMs: 15000

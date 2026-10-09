@@ -1,0 +1,2586 @@
+import type { Context } from '@deepseek-ai/cordis'
+import type { ToolCallView, ToolResultView, ToolResult } from '@deepseek-ai/dsh-tools'
+import type { JsonValue } from '@deepseek-ai/dsh-session'
+import { defineTool } from '@deepseek-ai/dsh-tools'
+import { DbClient, SqlError } from './client.js'
+
+export const name = 'dsh-tool-sql'
+export const inject = ['tools']
+
+export interface SqlPluginConfig {
+  /** Database type. */
+  type: 'postgres' | 'mysql'
+  /** Database host. */
+  host: string
+  /** Database port (defaults: postgres 5432, mysql 3306). */
+  port?: number
+  /** Database user. */
+  user: string
+  /** Database password. Never printed or logged. */
+  password: string
+  /** Database name. */
+  database: string
+  /** Connection timeout in ms (default 10000). */
+  connectTimeoutMs?: number
+  /** Query timeout in ms (default 15000). */
+  timeoutMs?: number
+  /** Max rows returned per query (default 100). */
+  maxRows?: number
+  /** Max columns returned per query (default 100). */
+  maxColumns?: number
+  /** Max serialized query result bytes (default 1 MiB). */
+  maxBytes?: number
+  /** Enable TLS for the connection (default false). */
+  ssl?: boolean
+  /** Verify the database certificate when TLS is enabled (default true). */
+  sslRejectUnauthorized?: boolean
+}
+
+export function apply(ctx: Context, config: SqlPluginConfig) {
+  const client = new DbClient(config)
+  for (const tool of createTools(client)) {
+    ctx.tools.register(tool)
+  }
+}
+
+/** Build the tool definitions for a client. Exported so tests can drive execute/render directly. */
+export function createTools(client: DbClient) {
+  return [
+    defineTool({
+      name: 'sql_query',
+      description:
+        'Run a read-only SQL query against the configured database (PostgreSQL or MySQL). Multiple statements, writes, dangerous functions, locking, and file/external execution clauses are rejected. Results are bounded by maxRows (default 100), maxColumns (default 100), and maxBytes (default 1 MiB).',
+      parameters: {
+        sql: { type: 'string', required: true, description: 'Read-only SQL statement, e.g. SELECT * FROM users LIMIT 10' },
+        limit: { type: 'integer', description: 'Maximum rows to return, 1-1000 (default: plugin maxRows)' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            columns: { type: 'array', items: { type: 'string' }, description: 'Column names in result order' },
+            rows: { type: 'array', items: { type: 'object', additionalProperties: true }, description: 'Result rows as column-name -> value maps' },
+            rowCount: { type: 'integer', description: 'Number of rows returned by the database' },
+            truncated: { type: 'boolean', description: 'True when more rows exist but the result was cut to maxRows' },
+          },
+        },
+        render: renderQueryResult,
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Query database`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { columns: string[]; rowCount: number; truncated?: boolean }
+        return {
+          card: 'generic',
+          title: `${v.rowCount ?? 0} rows${v.truncated ? ' (truncated)' : ''}`,
+          content: [{ type: 'text', text: (v.columns ?? []).join(', ') }],
+        }
+      },
+      async execute(args, exec) {
+        try {
+          const limit = args.limit === undefined ? undefined : Math.max(1, Math.min(args.limit, 1000))
+          const result = await client.query(args.sql, exec.signal, limit)
+          return {
+            columns: result.columns,
+            rows: result.rows as unknown as Array<Record<string, JsonValue>>,
+            rowCount: result.rowCount,
+            truncated: result.truncated,
+          }
+        } catch (error) {
+          if (error instanceof SqlError) throw error
+          throw error
+        }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_explain',
+      description:
+        'Show the execution plan of a read-only SQL statement. Runs EXPLAIN (or EXPLAIN + the statement). The statement itself is still read-only: EXPLAIN on a write statement is rejected.',
+      parameters: {
+        sql: { type: 'string', required: true, description: 'Read-only SQL statement to explain, e.g. SELECT * FROM users WHERE id = 1' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            columns: { type: 'array', items: { type: 'string' }, description: 'Column names in result order' },
+            rows: { type: 'array', items: { type: 'object', additionalProperties: true }, description: 'Plan rows' },
+            rowCount: { type: 'integer', description: 'Number of plan rows' },
+            truncated: { type: 'boolean', description: 'True when the result was cut to maxRows' },
+          },
+        },
+        render: renderQueryResult,
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Explain query`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { columns: string[]; rowCount: number; truncated?: boolean }
+        return {
+          card: 'generic',
+          title: `Plan: ${v.rowCount ?? 0} row(s)${v.truncated ? ' (truncated)' : ''}`,
+          content: [{ type: 'text', text: (v.columns ?? []).join(', ') }],
+        }
+      },
+      async execute(args, exec) {
+        try {
+          const statement = /^\s*explain\b/i.test(args.sql) ? args.sql : `EXPLAIN ${args.sql}`
+          const result = await client.query(statement, exec.signal)
+          return {
+            columns: result.columns,
+            rows: result.rows as unknown as Array<Record<string, JsonValue>>,
+            rowCount: result.rowCount,
+            truncated: result.truncated,
+          }
+        } catch (error) {
+          if (error instanceof SqlError) throw error
+          throw error
+        }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_tables',
+      description: 'List tables in the configured database (PostgreSQL: public schema; MySQL: current database).',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            tables: { type: 'array', items: { type: 'string' }, description: 'Table names' },
+          },
+        },
+        render: (_args, value) => {
+          const tables = value.tables ?? []
+          const lines = tables.length > 0 ? tables : ['(no tables)']
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List tables`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { tables?: string[] }
+        return { card: 'generic', title: `${v.tables?.length ?? 0} tables` }
+      },
+      async execute(_args, exec) {
+        return { tables: await client.listTables(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_describe_table',
+      description: 'Describe a table schema: column names, types, nullability, and default values.',
+      parameters: {
+        table: { type: 'string', required: true, description: 'Table name' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            columns: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Column name' },
+                  type: { type: 'string', description: 'Column data type' },
+                  nullable: { type: 'boolean', description: 'Whether the column allows NULL' },
+                  defaultValue: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Default value' },
+                },
+              },
+              description: 'Columns in ordinal position order',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const columns = value.columns ?? []
+          if (columns.length === 0) return [{ type: 'text', text: `Table "${value.table}" has no columns.` }]
+          const lines = ['column\ttype\tnullable\tdefault']
+          lines.push('---\t---\t---\t---')
+          for (const col of columns) {
+            lines.push(`${col.name}\t${col.type}\t${col.nullable ? 'YES' : 'NO'}\t${col.defaultValue ?? ''}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Describe table ${args.table}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { table?: string; columns?: Array<{ name: string; type: string }> }
+        return { card: 'generic', title: `Table ${v.table ?? ''}`, content: [{ type: 'text', text: `${v.columns?.length ?? 0} columns` }] }
+      },
+      async execute(args, exec) {
+        return { table: args.table, columns: await client.describeTable(args.table, exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_indexes',
+      description: 'List indexes of a table: index name, covered columns, and whether it is unique.',
+      parameters: {
+        table: { type: 'string', required: true, description: 'Table name' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            indexes: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Index name' },
+                  columns: { type: 'array', items: { type: 'string' }, description: 'Columns covered by the index' },
+                  unique: { type: 'boolean', description: 'Whether the index is unique' },
+                },
+              },
+              description: 'Indexes of the table',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const indexes = value.indexes ?? []
+          if (indexes.length === 0) return [{ type: 'text', text: `Table "${value.table}" has no indexes.` }]
+          const lines = ['index\tcolumns\tunique']
+          lines.push('---\t---\t---')
+          for (const idx of indexes) {
+            lines.push(`${idx.name}\t${(idx.columns ?? []).join(', ')}\t${idx.unique ? 'YES' : 'NO'}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `List indexes of ${args.table}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { table?: string; indexes?: unknown[] }
+        return { card: 'generic', title: `Indexes: ${v.table ?? ''}`, content: [{ type: 'text', text: `${v.indexes?.length ?? 0} index(es)` }] }
+      },
+      async execute(args, exec) {
+        return { table: args.table, indexes: await client.listIndexes(args.table, exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_database_info',
+      description: 'Show database server info: version, current database, current user, and server time.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            version: { type: 'string', description: 'Database server version' },
+            database: { type: 'string', description: 'Current database name' },
+            user: { type: 'string', description: 'Current user' },
+            serverTime: { type: 'string', description: 'Server time (ISO)' },
+          },
+        },
+        render: (_args, value) => {
+          const lines = [
+            `version: ${value.version ?? ''}`,
+            `database: ${value.database ?? ''}`,
+            `user: ${value.user ?? ''}`,
+            `server time: ${value.serverTime ?? ''}`,
+          ]
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `Database info`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { database?: string; version?: string }
+        return { card: 'generic', title: `Database ${v.database ?? ''}`, content: [{ type: 'text', text: v.version ?? '' }] }
+      },
+      async execute(_args, exec) {
+        return await client.databaseInfo(exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_table_stats',
+      description: 'List tables with estimated row counts (optimizer estimates, not exact), largest first.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            stats: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  table: { type: 'string', description: 'Table name' },
+                  schema: { type: 'string', description: 'Schema name' },
+                  estimatedRows: { type: 'integer', description: 'Estimated row count (approximate)' },
+                },
+              },
+              description: 'Per-table estimated row counts',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const stats = value.stats ?? []
+          if (stats.length === 0) return [{ type: 'text', text: '(no tables)' }]
+          const lines = ['table\tschema\testimated_rows']
+          lines.push('---\t---\t---')
+          for (const s of stats) {
+            lines.push(`${s.table}\t${s.schema ?? ''}\t${s.estimatedRows ?? 0}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `Table stats`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { stats?: unknown[] }
+        return { card: 'generic', title: `${v.stats?.length ?? 0} table(s)` }
+      },
+      async execute(_args, exec) {
+        return { stats: await client.tableStats(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_search_columns',
+      description:
+        'Search tables and columns by column name (case-insensitive, supports % and _ wildcards). Returns up to 100 matches.',
+      parameters: {
+        pattern: { type: 'string', required: true, description: 'Column name pattern, e.g. "user" or "%created_%"' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            matches: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  table: { type: 'string', description: 'Table name' },
+                  column: { type: 'string', description: 'Column name' },
+                  type: { type: 'string', description: 'Column data type' },
+                },
+              },
+              description: 'Matching columns',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const matches = value.matches ?? []
+          if (matches.length === 0) return [{ type: 'text', text: 'No matching columns found.' }]
+          const lines = ['table\tcolumn\ttype']
+          lines.push('---\t---\t---')
+          for (const m of matches) {
+            lines.push(`${m.table}.${m.column}\t${m.type ?? ''}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Search columns: ${args.pattern}`, kind: 'search' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { matches?: unknown[] }
+        return { card: 'generic', title: `${v.matches?.length ?? 0} column(s)` }
+      },
+      async execute(args, exec) {
+        return { matches: await client.searchColumns(args.pattern, exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_ping',
+      description: 'Test the database connection with SELECT 1 and report round-trip latency in milliseconds.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            ok: { type: 'boolean', description: 'Whether the connection succeeded' },
+            latencyMs: { type: 'integer', description: 'Round-trip latency in milliseconds' },
+          },
+        },
+        render: (_args, value) => {
+          return [{ type: 'text', text: value.ok ? `Connection OK (${value.latencyMs} ms)` : 'Connection failed.' }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `Ping database`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { ok?: boolean; latencyMs?: number }
+        return { card: 'generic', title: v.ok ? `OK (${v.latencyMs ?? 0} ms)` : 'Failed' }
+      },
+      async execute(_args, exec) {
+        return await client.ping(exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_views',
+      description: 'List views in the database (PostgreSQL: public schema; MySQL: current database), with definitions.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            views: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'View name' },
+                  definition: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'View definition SQL' },
+                },
+              },
+              description: 'Views',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const views = value.views ?? []
+          if (views.length === 0) return [{ type: 'text', text: '(no views)' }]
+          const lines = views.map(v => v.definition ? `${v.name}: ${v.definition}` : v.name)
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List views`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { views?: unknown[] }
+        return { card: 'generic', title: `${v.views?.length ?? 0} view(s)` }
+      },
+      async execute(_args, exec) {
+        return { views: await client.listViews(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_schemas',
+      description:
+        'List visible database schemas/namespaces. PostgreSQL returns schemas in the current database; MySQL returns databases/schemas accessible to the connection.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            schemas: { type: 'array', items: { type: 'string' }, description: 'Schema/database names' },
+          },
+        },
+        render: (_args, value) => {
+          const schemas = value.schemas ?? []
+          if (schemas.length === 0) return [{ type: 'text', text: '(no visible schemas)' }]
+          return [{ type: 'text', text: schemas.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List schemas`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { schemas?: string[] }
+        return { card: 'generic', title: `${v.schemas?.length ?? 0} schema(s)` }
+      },
+      async execute(_args, exec) {
+        return { schemas: await client.listSchemas(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_sequences',
+      description:
+        'List sequences in the current database. PostgreSQL returns sequences from the public schema with type/start/increment; MySQL has no sequence object and reports unsupported.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            supported: { type: 'boolean', description: 'Whether the database has sequence objects (PostgreSQL: true, MySQL: false)' },
+            sequences: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Sequence name' },
+                  dataType: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Sequence data type' },
+                  startValue: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Sequence start value' },
+                  increment: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Sequence increment' },
+                },
+              },
+              description: 'Sequences',
+            },
+          },
+        },
+        render: (_args, value) => {
+          if (!value.supported) return [{ type: 'text', text: 'This database (MySQL) does not support sequences.' }]
+          const sequences = value.sequences ?? []
+          if (sequences.length === 0) return [{ type: 'text', text: '(no sequences)' }]
+          const lines = ['name\ttype\tstart\tincrement']
+          lines.push('---\t---\t---\t---')
+          for (const s of sequences) {
+            lines.push(`${s.name}\t${s.dataType ?? ''}\t${s.startValue ?? ''}\t${s.increment ?? ''}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List sequences`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { supported?: boolean; sequences?: unknown[] }
+        return { card: 'generic', title: v.supported ? `${v.sequences?.length ?? 0} sequence(s)` : 'Not supported' }
+      },
+      async execute(_args, exec) {
+        if (client.databaseType === 'mysql') {
+          return { supported: false, sequences: [] }
+        }
+        return { supported: true, sequences: await client.listSequences(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_constraints',
+      description:
+        'List primary key, unique, and check constraints in the current database (PostgreSQL: public schema; MySQL: current database).',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            constraints: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Constraint name' },
+                  table: { type: 'string', description: 'Table name' },
+                  type: { type: 'string', enum: ['PRIMARY KEY', 'UNIQUE', 'CHECK'], description: 'Constraint type' },
+                  columns: { type: 'array', items: { type: 'string' }, description: 'Columns covered by the constraint' },
+                  definition: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Constraint definition' },
+                },
+              },
+              description: 'Primary key, unique, and check constraints',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const constraints = value.constraints ?? []
+          if (constraints.length === 0) return [{ type: 'text', text: '(no constraints)' }]
+          const lines = ['table\ttype\tname\tcolumns']
+          lines.push('---\t---\t---\t---')
+          for (const c of constraints) {
+            lines.push(`${c.table}\t${c.type}\t${c.name}\t${(c.columns ?? []).join(', ')}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List constraints`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { constraints?: unknown[] }
+        return { card: 'generic', title: `${v.constraints?.length ?? 0} constraint(s)` }
+      },
+      async execute(_args, exec) {
+        return { constraints: await client.listConstraints(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_databases',
+      description:
+        'List databases/schemas visible to the current connection. PostgreSQL excludes template databases; MySQL returns accessible schemas.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            databases: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Database/schema name' },
+                },
+              },
+              description: 'Databases or schemas visible to the connection',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const databases = value.databases ?? []
+          if (databases.length === 0) return [{ type: 'text', text: '(no visible databases)' }]
+          return [{ type: 'text', text: databases.map(d => d.name).join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List databases`, kind: 'search' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { databases?: unknown[] }
+        return { card: 'generic', title: `${v.databases?.length ?? 0} database(s)` }
+      },
+      async execute(_args, exec) {
+        return { databases: await client.listDatabases(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_roles',
+      description:
+        'List roles/accounts and their key attributes. PostgreSQL returns roles from pg_roles; MySQL returns accounts from mysql.user with a USER_PRIVILEGES fallback.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            roles: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Role name or account@host' },
+                  roleType: { type: 'string', enum: ['role', 'account'], description: 'PostgreSQL role or MySQL account' },
+                  attributes: { type: 'array', items: { type: 'string' }, description: 'Role/account attributes' },
+                  detail: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Additional role detail' },
+                },
+              },
+              description: 'Roles or accounts',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const roles = value.roles ?? []
+          if (roles.length === 0) return [{ type: 'text', text: '(no roles)' }]
+          const lines = ['name\ttype\tattributes\tdetail']
+          lines.push('---\t---\t---\t---')
+          for (const r of roles) {
+            lines.push(`${r.name}\t${r.roleType}\t${(r.attributes ?? []).join(', ')}\t${r.detail ?? ''}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List roles`, kind: 'search' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { roles?: unknown[] }
+        return { card: 'generic', title: `${v.roles?.length ?? 0} role(s)` }
+      },
+      async execute(_args, exec) {
+        return { roles: await client.listRoles(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_grants',
+      description:
+        'List object privileges visible to the connection. PostgreSQL returns table grants in the public schema; MySQL returns global user privileges.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            grants: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  grantee: { type: 'string', description: 'Grantee name' },
+                  object: { type: 'string', description: 'Privileged object, target, or *.*' },
+                  privilege: { type: 'string', description: 'Privilege type' },
+                  grantable: { type: 'boolean', description: 'Whether the grantee can grant the privilege' },
+                },
+              },
+              description: 'Privileges',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const grants = value.grants ?? []
+          if (grants.length === 0) return [{ type: 'text', text: '(no grants)' }]
+          const lines = ['grantee\tobject\tprivilege\tgrantable']
+          lines.push('---\t---\t---\t---')
+          for (const g of grants) {
+            lines.push(`${g.grantee}\t${g.object}\t${g.privilege}\t${g.grantable ? 'YES' : 'NO'}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List grants`, kind: 'search' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { grants?: unknown[] }
+        return { card: 'generic', title: `${v.grants?.length ?? 0} grant(s)` }
+      },
+      async execute(_args, exec) {
+        return { grants: await client.listGrants(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_materialized_views',
+      description:
+        'List materialized views with definitions. PostgreSQL returns materialized views in the public schema; MySQL reports unsupported.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            supported: { type: 'boolean', description: 'Whether the database supports materialized views (PostgreSQL: true, MySQL: false)' },
+            materializedViews: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Materialized view name' },
+                  definition: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Materialized view definition SQL' },
+                },
+              },
+              description: 'Materialized views',
+            },
+          },
+        },
+        render: (_args, value) => {
+          if (!value.supported) return [{ type: 'text', text: 'This database (MySQL) does not support materialized views.' }]
+          const views = value.materializedViews ?? []
+          if (views.length === 0) return [{ type: 'text', text: '(no materialized views)' }]
+          return [{ type: 'text', text: views.map(v => v.definition ? `${v.name}: ${v.definition}` : v.name).join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List materialized views`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { supported?: boolean; materializedViews?: unknown[] }
+        return { card: 'generic', title: v.supported ? `${v.materializedViews?.length ?? 0} materialized view(s)` : 'Not supported' }
+      },
+      async execute(_args, exec) {
+        if (client.databaseType === 'mysql') {
+          return { supported: false, materializedViews: [] }
+        }
+        return { supported: true, materializedViews: await client.listMaterializedViews(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_partitions',
+      description:
+        'List table partitions and bounds. PostgreSQL returns partition children of public-schema partitioned tables; MySQL returns information_schema.PARTITIONS entries.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            partitions: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  parent: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Parent table name' },
+                  partition: { type: 'string', description: 'Partition name' },
+                  method: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Partitioning method' },
+                  bound: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Partition bound or expression' },
+                  estimatedRows: { oneOf: [{ type: 'integer' }, { type: 'null' }], description: 'Estimated row count' },
+                },
+              },
+              description: 'Partitions',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const partitions = value.partitions ?? []
+          if (partitions.length === 0) return [{ type: 'text', text: '(no partitions)' }]
+          const lines = ['parent\tpartition\tmethod\tbound\testimated_rows']
+          lines.push('---\t---\t---\t---\t---')
+          for (const p of partitions) {
+            lines.push(`${p.parent ?? ''}\t${p.partition}\t${p.method ?? ''}\t${p.bound ?? ''}\t${p.estimatedRows ?? 0}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List partitions`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { partitions?: unknown[] }
+        return { card: 'generic', title: `${v.partitions?.length ?? 0} partition(s)` }
+      },
+      async execute(_args, exec) {
+        return { partitions: await client.listPartitions(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_get_table_row_count',
+      description:
+        'Return the exact row count for a table with COUNT(*). Table names are strictly validated; counting a very large table can take time.',
+      parameters: {
+        table: { type: 'string', required: true, description: 'Table name (letters, digits, underscores only)' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            rowCount: { type: 'integer', description: 'Exact row count' },
+          },
+        },
+        render: (_args, value) => [{ type: 'text', text: `${value.table}: ${value.rowCount} row(s)` }],
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Row count: ${args.table}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { table?: string; rowCount?: number }
+        return { card: 'generic', title: `${v.table ?? ''}: ${v.rowCount ?? 0} row(s)` }
+      },
+      async execute(args, exec) {
+        return await client.getTableRowCount(args.table, exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_table_size',
+      description: 'Show a table\'s disk usage: data size, index size, and total in bytes.',
+      parameters: {
+        table: { type: 'string', required: true, description: 'Table name' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            dataBytes: { type: 'integer', description: 'Data size in bytes' },
+            indexBytes: { type: 'integer', description: 'Index size in bytes' },
+            totalBytes: { type: 'integer', description: 'Total size in bytes' },
+          },
+        },
+        render: (_args, value) => {
+          const fmt = (n: number) => {
+            if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GiB`
+            if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(2)} MiB`
+            if (n >= 1024) return `${(n / 1024).toFixed(2)} KiB`
+            return `${n} B`
+          }
+          return [{ type: 'text', text: `data: ${fmt(value.dataBytes ?? 0)}\nindex: ${fmt(value.indexBytes ?? 0)}\ntotal: ${fmt(value.totalBytes ?? 0)}` }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Size of ${args.table}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { table?: string; totalBytes?: number }
+        return { card: 'generic', title: `Size: ${v.table ?? ''}`, content: [{ type: 'text', text: `${v.totalBytes ?? 0} bytes` }] }
+      },
+      async execute(args, exec) {
+        return await client.tableSize(args.table, exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_get_schema',
+      description:
+        'Show the CREATE TABLE DDL for a table. MySQL returns the server\'s own DDL; PostgreSQL returns a simplified DDL generated from catalog metadata (columns, types, NOT NULL, defaults). Read-only: never executes DDL.',
+      parameters: {
+        table: { type: 'string', required: true, description: 'Table name' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            ddl: { type: 'string', description: 'CREATE TABLE statement' },
+            simplified: { type: 'boolean', description: 'True when the DDL is a simplified catalog-generated version (PostgreSQL)' },
+          },
+        },
+        render: (_args, value) => [{ type: 'text', text: value.ddl ?? '' }],
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Schema of ${args.table}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { table?: string; simplified?: boolean }
+        return { card: 'generic', title: `Schema: ${v.table ?? ''}${v.simplified ? ' (simplified)' : ''}` }
+      },
+      async execute(args, exec) {
+        return await client.getSchema(args.table, exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_preview',
+      description:
+        'Preview the first rows of a table (SELECT * with LIMIT). Safe: table names are strictly validated and the query is generated by the driver. Default 10 rows, max 100.',
+      parameters: {
+        table: { type: 'string', required: true, description: 'Table name (letters, digits, underscores only)' },
+        limit: { type: 'integer', description: 'Maximum rows, 1-100 (default 10)' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            limit: { type: 'integer', description: 'Requested row limit' },
+            columns: { type: 'array', items: { type: 'string' }, description: 'Column names in result order' },
+            rows: { type: 'array', items: { type: 'object', additionalProperties: true }, description: 'Preview rows' },
+            rowCount: { type: 'integer', description: 'Number of rows returned by the database' },
+            truncated: { type: 'boolean', description: 'True when more rows exist than requested' },
+          },
+        },
+        render: renderQueryResult,
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Preview ${args.table}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { table?: string; rowCount?: number }
+        return { card: 'generic', title: `Preview: ${v.table ?? ''}`, content: [{ type: 'text', text: `${v.rowCount ?? 0} row(s)` }] }
+      },
+      async execute(args, exec) {
+        const limit = args.limit === undefined ? 10 : Math.max(1, Math.min(args.limit, 100))
+        const result = await client.previewTable(args.table, limit, exec.signal)
+        return {
+          table: args.table,
+          limit,
+          columns: result.columns,
+          rows: result.rows as unknown as Array<Record<string, JsonValue>>,
+          rowCount: result.rowCount,
+          truncated: result.truncated,
+        }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_functions',
+      description: 'List functions and stored procedures in the database (name, arguments, language, return type).',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            functions: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Function/procedure name' },
+                  arguments: { type: 'string', description: 'Argument signature (PG) or routine kind (MySQL)' },
+                  language: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Implementation language (PG)' },
+                  returnType: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Return type' },
+                },
+              },
+              description: 'Functions and procedures',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const functions = value.functions ?? []
+          if (functions.length === 0) return [{ type: 'text', text: '(no functions)' }]
+          const lines = ['name\targuments\tlanguage\treturns']
+          lines.push('---\t---\t---\t---')
+          for (const f of functions) {
+            lines.push(`${f.name}\t${f.arguments ?? ''}\t${f.language ?? ''}\t${f.returnType ?? ''}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List functions`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { functions?: unknown[] }
+        return { card: 'generic', title: `${v.functions?.length ?? 0} function(s)` }
+      },
+      async execute(_args, exec) {
+        return { functions: await client.listFunctions(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_triggers',
+      description: 'List triggers in the database (name, table, timing, event, definition).',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            triggers: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Trigger name' },
+                  table: { type: 'string', description: 'Table name' },
+                  timing: { type: 'string', description: 'Timing (BEFORE/AFTER/INSTEAD OF)' },
+                  event: { type: 'string', description: 'Event (INSERT/UPDATE/DELETE/TRUNCATE)' },
+                  definition: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Trigger definition' },
+                },
+              },
+              description: 'Triggers',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const triggers = value.triggers ?? []
+          if (triggers.length === 0) return [{ type: 'text', text: '(no triggers)' }]
+          const lines = ['name\ttable\ttiming\tevent']
+          lines.push('---\t---\t---\t---')
+          for (const t of triggers) {
+            lines.push(`${t.name}\t${t.table}\t${t.timing ?? ''}\t${t.event ?? ''}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List triggers`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { triggers?: unknown[] }
+        return { card: 'generic', title: `${v.triggers?.length ?? 0} trigger(s)` }
+      },
+      async execute(_args, exec) {
+        return { triggers: await client.listTriggers(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_foreign_keys',
+      description: 'List foreign keys in the database (constraint name, table/column, referenced table/column).',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            foreignKeys: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Constraint name' },
+                  table: { type: 'string', description: 'Source table' },
+                  column: { type: 'string', description: 'Source column' },
+                  referencedTable: { type: 'string', description: 'Referenced table' },
+                  referencedColumn: { type: 'string', description: 'Referenced column' },
+                },
+              },
+              description: 'Foreign keys',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const fks = value.foreignKeys ?? []
+          if (fks.length === 0) return [{ type: 'text', text: '(no foreign keys)' }]
+          const lines = ['name\tcolumn\t->\treferenced']
+          lines.push('---\t---\t---\t---')
+          for (const fk of fks) {
+            lines.push(`${fk.name}\t${fk.table}.${fk.column}\t->\t${fk.referencedTable}.${fk.referencedColumn}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List foreign keys`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { foreignKeys?: unknown[] }
+        return { card: 'generic', title: `${v.foreignKeys?.length ?? 0} foreign key(s)` }
+      },
+      async execute(_args, exec) {
+        return { foreignKeys: await client.listForeignKeys(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_schema_dump',
+      description:
+        'Export the whole database structure: CREATE TABLE DDL for every table plus view definitions. PostgreSQL DDL is simplified (catalog-generated); MySQL returns server DDL.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            tables: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  table: { type: 'string', description: 'Table name' },
+                  ddl: { type: 'string', description: 'CREATE TABLE statement' },
+                  simplified: { type: 'boolean', description: 'True for catalog-generated DDL' },
+                },
+              },
+              description: 'All tables with DDL',
+            },
+            views: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'View name' },
+                  definition: { type: 'string', description: 'View definition' },
+                },
+              },
+              description: 'All views',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const tables = value.tables ?? []
+          const views = value.views ?? []
+          const lines: string[] = []
+          for (const t of tables) {
+            lines.push(`-- table ${t.table}${t.simplified ? ' (simplified)' : ''}`)
+            lines.push(t.ddl ?? '')
+            lines.push('')
+          }
+          for (const v of views) {
+            lines.push(`-- view ${v.name}`)
+            lines.push(`CREATE VIEW ${v.name} AS ${v.definition ?? ''};`)
+            lines.push('')
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `Dump schema`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { tables?: unknown[]; views?: unknown[] }
+        return { card: 'generic', title: `${v.tables?.length ?? 0} table(s) · ${v.views?.length ?? 0} view(s)` }
+      },
+      async execute(_args, exec) {
+        return await client.schemaDump(exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_extensions',
+      description:
+        'List installed database extensions/plugins. PostgreSQL returns extensions with versions; MySQL has no extension concept and returns an empty list with a note.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            supported: { type: 'boolean', description: 'Whether the database supports extensions (PostgreSQL: true, MySQL: false)' },
+            extensions: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Extension name' },
+                  version: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Extension version' },
+                },
+              },
+              description: 'Installed extensions',
+            },
+          },
+        },
+        render: (_args, value) => {
+          if (!value.supported) return [{ type: 'text', text: 'This database (MySQL) does not support extensions.' }]
+          const extensions = value.extensions ?? []
+          if (extensions.length === 0) return [{ type: 'text', text: '(no extensions installed)' }]
+          const lines = extensions.map(e => `${e.name}${e.version ? ` (${e.version})` : ''}`)
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List extensions`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { supported?: boolean; extensions?: unknown[] }
+        return { card: 'generic', title: v.supported ? `${v.extensions?.length ?? 0} extension(s)` : 'Not supported' }
+      },
+      async execute(_args, exec) {
+        if (client.databaseType === 'mysql') {
+          return { supported: false, extensions: [] }
+        }
+        return { supported: true, extensions: await client.listExtensions(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_search_tables',
+      description:
+        'Search tables, views, and materialized views by name (case-insensitive, supports % and _ wildcards). Returns up to 100 matches.',
+      parameters: {
+        pattern: { type: 'string', required: true, description: 'Table/view name pattern, e.g. "order" or "%audit_%"' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            matches: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  schema: { type: 'string', description: 'Schema/database name' },
+                  name: { type: 'string', description: 'Table, view, or materialized view name' },
+                  kind: { type: 'string', enum: ['table', 'view', 'materialized view'], description: 'Object kind' },
+                },
+              },
+              description: 'Matching database objects',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const matches = value.matches ?? []
+          if (matches.length === 0) return [{ type: 'text', text: 'No matching tables or views found.' }]
+          const lines = ['schema\tname\tkind']
+          lines.push('---\t---\t---')
+          for (const m of matches) {
+            lines.push(`${m.schema}\t${m.name}\t${m.kind}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Search tables: ${args.pattern}`, kind: 'search' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { matches?: unknown[] }
+        return { card: 'generic', title: `${v.matches?.length ?? 0} object(s)` }
+      },
+      async execute(args, exec) {
+        return { matches: await client.searchTables(args.pattern, exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_database_size',
+      description:
+        'Return disk usage for the current database. PostgreSQL reports total database size; MySQL reports data plus index sizes.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            database: { type: 'string', description: 'Current database/schema name' },
+            totalBytes: { type: 'integer', description: 'Total database size in bytes' },
+            dataBytes: { oneOf: [{ type: 'integer' }, { type: 'null' }], description: 'Data bytes (MySQL only)' },
+            indexBytes: { oneOf: [{ type: 'integer' }, { type: 'null' }], description: 'Index bytes (MySQL only)' },
+          },
+        },
+        render: (_args, value) => {
+          const lines = [
+            `database: ${value.database ?? ''}`,
+            `data: ${value.dataBytes === null || value.dataBytes === undefined ? 'n/a' : formatBytes(value.dataBytes)}`,
+            `index: ${value.indexBytes === null || value.indexBytes === undefined ? 'n/a' : formatBytes(value.indexBytes)}`,
+            `total: ${formatBytes(value.totalBytes ?? 0)}`,
+          ]
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `Database size`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { database?: string; totalBytes?: number }
+        return { card: 'generic', title: `Size: ${v.database ?? ''}`, content: [{ type: 'text', text: formatBytes(v.totalBytes ?? 0) }] }
+      },
+      async execute(_args, exec) {
+        return await client.databaseSize(exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_table_sizes',
+      description:
+        'List disk usage for every table in the current database, largest first. PostgreSQL covers the public schema; MySQL covers the current database.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            sizes: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  schema: { type: 'string', description: 'Schema/database name' },
+                  table: { type: 'string', description: 'Table name' },
+                  dataBytes: { type: 'integer', description: 'Data size in bytes' },
+                  indexBytes: { type: 'integer', description: 'Index size in bytes' },
+                  totalBytes: { type: 'integer', description: 'Total size in bytes' },
+                },
+              },
+              description: 'Per-table sizes',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const sizes = value.sizes ?? []
+          if (sizes.length === 0) return [{ type: 'text', text: '(no tables)' }]
+          const lines = ['schema\ttable\tdata\tindex\ttotal']
+          lines.push('---\t---\t---\t---\t---')
+          for (const s of sizes) {
+            lines.push(`${s.schema}\t${s.table}\t${formatBytes(s.dataBytes ?? 0)}\t${formatBytes(s.indexBytes ?? 0)}\t${formatBytes(s.totalBytes ?? 0)}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List table sizes`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { sizes?: unknown[] }
+        return { card: 'generic', title: `${v.sizes?.length ?? 0} table(s)` }
+      },
+      async execute(_args, exec) {
+        return { sizes: await client.listTableSizes(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_get_table_comments',
+      description:
+        'Show the table comment and column comments for a table. PostgreSQL covers the public schema; MySQL covers the current database.',
+      parameters: {
+        table: { type: 'string', required: true, description: 'Table name' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            tableComment: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Table comment' },
+            columns: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Column name' },
+                  comment: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Column comment' },
+                },
+              },
+              description: 'Column comments',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const columns = value.columns ?? []
+          const lines = [
+            `table: ${value.table ?? ''}`,
+            `table comment: ${value.tableComment ?? '(none)'}`,
+          ]
+          if (columns.length === 0) {
+            lines.push('(no columns)')
+          } else {
+            lines.push('column\tcomment')
+            lines.push('---\t---')
+            for (const col of columns) {
+              lines.push(`${col.name}\t${col.comment ?? ''}`)
+            }
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Comments: ${args.table}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { table?: string; columns?: unknown[] }
+        return { card: 'generic', title: `Comments: ${v.table ?? ''}`, content: [{ type: 'text', text: `${v.columns?.length ?? 0} column(s)` }] }
+      },
+      async execute(args, exec) {
+        return await client.getTableComments(args.table, exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_incoming_foreign_keys',
+      description:
+        'List foreign keys from other tables that reference a target table. Use this to see which child rows depend on a parent table.',
+      parameters: {
+        table: { type: 'string', required: true, description: 'Referenced (parent) table name' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            table: { type: 'string', description: 'Referenced table name' },
+            foreignKeys: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Constraint name' },
+                  table: { type: 'string', description: 'Child table' },
+                  column: { type: 'string', description: 'Child column' },
+                  referencedTable: { type: 'string', description: 'Referenced table' },
+                  referencedColumn: { type: 'string', description: 'Referenced column' },
+                },
+              },
+              description: 'Incoming foreign keys',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const fks = value.foreignKeys ?? []
+          if (fks.length === 0) return [{ type: 'text', text: `No tables reference "${value.table}".` }]
+          const lines = ['name\tchild\t->\tparent']
+          lines.push('---\t---\t---\t---')
+          for (const fk of fks) {
+            lines.push(`${fk.name}\t${fk.table}.${fk.column}\t->\t${fk.referencedTable}.${fk.referencedColumn}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Incoming FKs: ${args.table}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { table?: string; foreignKeys?: unknown[] }
+        return { card: 'generic', title: `${v.table ?? ''}: ${v.foreignKeys?.length ?? 0} reference(s)` }
+      },
+      async execute(args, exec) {
+        return { table: args.table, foreignKeys: await client.listIncomingForeignKeys(args.table, exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_get_column_stats',
+      description:
+        'Analyze a single column: total rows, non-null rows, null rows, distinct values, and the distinct ratio among non-null values. Uses COUNT aggregates and can be slow on very large tables.',
+      parameters: {
+        table: { type: 'string', required: true, description: 'Table name (letters, digits, underscores only)' },
+        column: { type: 'string', required: true, description: 'Column name (letters, digits, underscores only)' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            column: { type: 'string', description: 'Column name' },
+            rowCount: { type: 'integer', description: 'Total rows' },
+            nonNullCount: { type: 'integer', description: 'Rows with a non-null value' },
+            nullCount: { type: 'integer', description: 'Rows with a null value' },
+            distinctCount: { type: 'integer', description: 'Distinct non-null values' },
+            distinctRatio: { oneOf: [{ type: 'number' }, { type: 'null' }], description: 'Distinct count divided by non-null count' },
+          },
+        },
+        render: (_args, value) => {
+          const ratio = value.distinctRatio === null || value.distinctRatio === undefined ? 'n/a' : value.distinctRatio.toFixed(4)
+          const lines = [
+            `table: ${value.table ?? ''}`,
+            `column: ${value.column ?? ''}`,
+            `rows: ${value.rowCount ?? 0}`,
+            `non-null: ${value.nonNullCount ?? 0}`,
+            `null: ${value.nullCount ?? 0}`,
+            `distinct: ${value.distinctCount ?? 0}`,
+            `distinct ratio: ${ratio}`,
+          ]
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Column stats: ${args.table}.${args.column}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { table?: string; column?: string; rowCount?: number }
+        return { card: 'generic', title: `Stats: ${v.table ?? ''}.${v.column ?? ''}`, content: [{ type: 'text', text: `${v.rowCount ?? 0} row(s)` }] }
+      },
+      async execute(args, exec) {
+        return await client.getColumnStats(args.table, args.column, exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_get_function_source',
+      description:
+        'Return the source definition of a function or stored procedure. PostgreSQL returns all matching overloads in the public schema; MySQL returns routines from the current database.',
+      parameters: {
+        name: { type: 'string', required: true, description: 'Function or stored procedure name' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            name: { type: 'string', description: 'Routine name' },
+            sources: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Routine name' },
+                  kind: { type: 'string', enum: ['function', 'procedure'], description: 'Routine kind' },
+                  arguments: { type: 'string', description: 'Argument signature where available' },
+                  language: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Implementation language' },
+                  source: { type: 'string', description: 'Routine source definition' },
+                },
+              },
+              description: 'Matching routines',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const sources = value.sources ?? []
+          if (sources.length === 0) return [{ type: 'text', text: `No function or procedure named "${value.name}" found.` }]
+          const blocks = sources.map((s) => [
+            `name: ${s.name}`,
+            `kind: ${s.kind}`,
+            `arguments: ${s.arguments ?? ''}`,
+            `language: ${s.language ?? ''}`,
+            `source:\n${s.source ?? ''}`,
+          ].join('\n'))
+          return [{ type: 'text', text: blocks.join('\n---\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Function source: ${args.name}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { name?: string; sources?: unknown[] }
+        return { card: 'generic', title: `Source: ${v.name ?? ''}`, content: [{ type: 'text', text: `${v.sources?.length ?? 0} match(es)` }] }
+      },
+      async execute(args, exec) {
+        return { name: args.name, sources: await client.getFunctionSource(args.name, exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_enum_types',
+      description:
+        'List PostgreSQL enum types with their values in declaration order. MySQL reports unsupported because it has no standalone enum type objects.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            supported: { type: 'boolean', description: 'Whether the database supports enum type objects (PostgreSQL: true, MySQL: false)' },
+            enumTypes: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Enum type name' },
+                  values: { type: 'array', items: { type: 'string' }, description: 'Enum values in declaration order' },
+                },
+              },
+              description: 'Enum types',
+            },
+          },
+        },
+        render: (_args, value) => {
+          if (!value.supported) return [{ type: 'text', text: 'This database (MySQL) does not support enum type objects.' }]
+          const enumTypes = value.enumTypes ?? []
+          if (enumTypes.length === 0) return [{ type: 'text', text: '(no enum types)' }]
+          const lines = ['name\tvalues']
+          lines.push('---\t---')
+          for (const e of enumTypes) {
+            lines.push(`${e.name}\t${(e.values ?? []).join(', ')}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List enum types`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { supported?: boolean; enumTypes?: unknown[] }
+        return { card: 'generic', title: v.supported ? `${v.enumTypes?.length ?? 0} enum type(s)` : 'Not supported' }
+      },
+      async execute(_args, exec) {
+        if (client.databaseType === 'mysql') {
+          return { supported: false, enumTypes: [] }
+        }
+        return { supported: true, enumTypes: await client.listEnumTypes(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_get_table_health',
+      description:
+        'Show PostgreSQL table activity and maintenance health: sequence scans, index scans, live/dead rows, and last vacuum/analyze times. MySQL reports unsupported.',
+      parameters: {
+        table: { type: 'string', required: true, description: 'Table name (letters, digits, underscores only)' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            supported: { type: 'boolean', description: 'Whether the database exposes PostgreSQL table health statistics' },
+            seqScans: { oneOf: [{ type: 'integer' }, { type: 'null' }], description: 'Sequence scan count' },
+            indexScans: { oneOf: [{ type: 'integer' }, { type: 'null' }], description: 'Index scan count' },
+            liveRows: { oneOf: [{ type: 'integer' }, { type: 'null' }], description: 'Estimated live rows' },
+            deadRows: { oneOf: [{ type: 'integer' }, { type: 'null' }], description: 'Dead rows' },
+            lastVacuum: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Last vacuum timestamp' },
+            lastAnalyze: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Last analyze timestamp' },
+          },
+        },
+        render: (_args, value) => {
+          if (!value.supported) return [{ type: 'text', text: 'This database (MySQL) does not expose PostgreSQL table health statistics.' }]
+          const lines = [
+            `table: ${value.table ?? ''}`,
+            `seq scans: ${value.seqScans ?? 0}`,
+            `index scans: ${value.indexScans ?? 0}`,
+            `live rows: ${value.liveRows ?? 0}`,
+            `dead rows: ${value.deadRows ?? 0}`,
+            `last vacuum: ${value.lastVacuum ?? '(never)'}`,
+            `last analyze: ${value.lastAnalyze ?? '(never)'}`,
+          ]
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Table health: ${args.table}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { table?: string; supported?: boolean; deadRows?: number | null }
+        return { card: 'generic', title: v.supported ? `Health: ${v.table ?? ''}` : 'Not supported' }
+      },
+      async execute(args, exec) {
+        if (client.databaseType === 'mysql') {
+          return {
+            table: args.table,
+            supported: false,
+            seqScans: null,
+            indexScans: null,
+            liveRows: null,
+            deadRows: null,
+            lastVacuum: null,
+            lastAnalyze: null,
+          }
+        }
+        return await client.getTableHealth(args.table, exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_active_queries',
+      description:
+        'List currently running/non-idle queries visible to the connection. PostgreSQL reads pg_stat_activity; MySQL reads information_schema.PROCESSLIST. Query text is included for diagnostics.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            queries: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  id: { type: 'string', description: 'Process/session id' },
+                  user: { type: 'string', description: 'User/session user' },
+                  database: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Database/schema name' },
+                  state: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Current state' },
+                  durationSeconds: { oneOf: [{ type: 'integer' }, { type: 'null' }], description: 'Elapsed seconds' },
+                  query: { type: 'string', description: 'Query text' },
+                },
+              },
+              description: 'Active queries',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const queries = value.queries ?? []
+          if (queries.length === 0) return [{ type: 'text', text: '(no active queries)' }]
+          const lines = ['id\tuser\tdatabase\tstate\tduration_s\tquery']
+          lines.push('---\t---\t---\t---\t---\t---')
+          for (const q of queries) {
+            const preview = (q.query ?? '').replace(/\s+/g, ' ').slice(0, 200)
+            lines.push(`${q.id}\t${q.user}\t${q.database ?? ''}\t${q.state ?? ''}\t${q.durationSeconds ?? ''}\t${preview}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List active queries`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { queries?: unknown[] }
+        return { card: 'generic', title: `${v.queries?.length ?? 0} active query(s)` }
+      },
+      async execute(_args, exec) {
+        return { queries: await client.listActiveQueries(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_search_routines',
+      description:
+        'Search functions and stored procedures by name (case-insensitive, supports % and _ wildcards). PostgreSQL returns public-schema routines; MySQL returns routines in the current database.',
+      parameters: {
+        pattern: { type: 'string', required: true, description: 'Routine name pattern, e.g. "calc" or "%audit%"' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            matches: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: 'Routine name' },
+                  kind: { type: 'string', enum: ['function', 'procedure'], description: 'Routine kind' },
+                  arguments: { type: 'string', description: 'Argument signature where available' },
+                  language: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Implementation language' },
+                },
+              },
+              description: 'Matching routines',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const matches = value.matches ?? []
+          if (matches.length === 0) return [{ type: 'text', text: 'No matching routines found.' }]
+          const lines = ['name\tkind\targuments\tlanguage']
+          lines.push('---\t---\t---\t---')
+          for (const m of matches) {
+            lines.push(`${m.name}\t${m.kind}\t${m.arguments ?? ''}\t${m.language ?? ''}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Search routines: ${args.pattern}`, kind: 'search' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { matches?: unknown[] }
+        return { card: 'generic', title: `${v.matches?.length ?? 0} routine(s)` }
+      },
+      async execute(args, exec) {
+        return { matches: await client.searchRoutines(args.pattern, exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_search_indexes',
+      description:
+        'Search indexes by table name or index name (case-insensitive, supports % and _ wildcards). Returns covered columns and uniqueness.',
+      parameters: {
+        pattern: { type: 'string', required: true, description: 'Table/index name pattern, e.g. "user" or "%_pkey"' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            matches: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  schema: { type: 'string', description: 'Schema/database name' },
+                  table: { type: 'string', description: 'Table name' },
+                  name: { type: 'string', description: 'Index name' },
+                  columns: { type: 'array', items: { type: 'string' }, description: 'Covered columns' },
+                  unique: { type: 'boolean', description: 'Whether the index is unique' },
+                },
+              },
+              description: 'Matching indexes',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const matches = value.matches ?? []
+          if (matches.length === 0) return [{ type: 'text', text: 'No matching indexes found.' }]
+          const lines = ['table\tindex\tcolumns\tunique']
+          lines.push('---\t---\t---\t---')
+          for (const m of matches) {
+            lines.push(`${m.table}.${m.name}\t${(m.columns ?? []).join(', ')}\t${m.unique ? 'YES' : 'NO'}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Search indexes: ${args.pattern}`, kind: 'search' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { matches?: unknown[] }
+        return { card: 'generic', title: `${v.matches?.length ?? 0} index(es)` }
+      },
+      async execute(args, exec) {
+        return { matches: await client.searchIndexes(args.pattern, exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_index_usage',
+      description:
+        'List PostgreSQL index usage statistics for public-schema indexes: scan count and tuples read/fetched, largest scan count first. MySQL reports unsupported.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            supported: { type: 'boolean', description: 'Whether the database exposes index usage statistics (PostgreSQL: true, MySQL: false)' },
+            indexes: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  schema: { type: 'string', description: 'Schema name' },
+                  table: { type: 'string', description: 'Table name' },
+                  index: { type: 'string', description: 'Index name' },
+                  scans: { type: 'integer', description: 'Index scan count' },
+                  tuplesRead: { type: 'integer', description: 'Index tuples read' },
+                  tuplesFetched: { type: 'integer', description: 'Index tuples fetched' },
+                },
+              },
+              description: 'Index usage statistics',
+            },
+          },
+        },
+        render: (_args, value) => {
+          if (!value.supported) return [{ type: 'text', text: 'This database (MySQL) does not expose PostgreSQL index usage statistics.' }]
+          const indexes = value.indexes ?? []
+          if (indexes.length === 0) return [{ type: 'text', text: '(no indexes)' }]
+          const lines = ['table\tindex\tscans\tread\tfetched']
+          lines.push('---\t---\t---\t---\t---')
+          for (const idx of indexes) {
+            lines.push(`${idx.table}\t${idx.index}\t${idx.scans ?? 0}\t${idx.tuplesRead ?? 0}\t${idx.tuplesFetched ?? 0}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List index usage`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { supported?: boolean; indexes?: unknown[] }
+        return { card: 'generic', title: v.supported ? `${v.indexes?.length ?? 0} index(es)` : 'Not supported' }
+      },
+      async execute(_args, exec) {
+        if (client.databaseType === 'mysql') {
+          return { supported: false, indexes: [] }
+        }
+        return { supported: true, indexes: await client.listIndexUsage(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_list_locks',
+      description:
+        'List database locks visible to the connection. PostgreSQL reads pg_locks joined to pg_stat_activity; MySQL reads performance_schema.data_locks. Includes query text for diagnostics.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            locks: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  pid: { type: 'string', description: 'Process/session id' },
+                  user: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'User/session user' },
+                  database: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Database/schema name' },
+                  state: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Session state' },
+                  object: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Locked object' },
+                  lockType: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Lock type' },
+                  mode: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Lock mode' },
+                  granted: { oneOf: [{ type: 'boolean' }, { type: 'null' }], description: 'Whether the lock is granted or waiting' },
+                  query: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Session query text' },
+                },
+              },
+              description: 'Locks',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const locks = value.locks ?? []
+          if (locks.length === 0) return [{ type: 'text', text: '(no locks)' }]
+          const lines = ['pid\tuser\tdatabase\tobject\ttype\tmode\tgranted']
+          lines.push('---\t---\t---\t---\t---\t---\t---')
+          for (const l of locks) {
+            lines.push(`${l.pid}\t${l.user ?? ''}\t${l.database ?? ''}\t${l.object ?? ''}\t${l.lockType ?? ''}\t${l.mode ?? ''}\t${l.granted === true ? 'YES' : l.granted === false ? 'WAITING' : ''}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(): ToolCallView {
+        return { card: 'generic', title: `List locks`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { locks?: unknown[] }
+        return { card: 'generic', title: `${v.locks?.length ?? 0} lock(s)` }
+      },
+      async execute(_args, exec) {
+        return { locks: await client.listLocks(exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_get_table_last_access',
+      description:
+        'Show the last sequence/index scan times and scan counts for a PostgreSQL table. MySQL reports unsupported.',
+      parameters: {
+        table: { type: 'string', required: true, description: 'Table name (letters, digits, underscores only)' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            supported: { type: 'boolean', description: 'Whether the database exposes PostgreSQL table access statistics' },
+            lastSeqScan: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Last sequential scan timestamp' },
+            lastIdxScan: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Last index scan timestamp' },
+            seqScans: { oneOf: [{ type: 'integer' }, { type: 'null' }], description: 'Sequential scan count' },
+            indexScans: { oneOf: [{ type: 'integer' }, { type: 'null' }], description: 'Index scan count' },
+          },
+        },
+        render: (_args, value) => {
+          if (!value.supported) return [{ type: 'text', text: 'This database (MySQL) does not expose PostgreSQL table access statistics.' }]
+          const lines = [
+            `table: ${value.table ?? ''}`,
+            `last seq scan: ${value.lastSeqScan ?? '(never)'}`,
+            `last index scan: ${value.lastIdxScan ?? '(never)'}`,
+            `seq scans: ${value.seqScans ?? 0}`,
+            `index scans: ${value.indexScans ?? 0}`,
+          ]
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Last access: ${args.table}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { table?: string; supported?: boolean }
+        return { card: 'generic', title: v.supported ? `Access: ${v.table ?? ''}` : 'Not supported' }
+      },
+      async execute(args, exec) {
+        if (client.databaseType === 'mysql') {
+          return {
+            table: args.table,
+            supported: false,
+            lastSeqScan: null,
+            lastIdxScan: null,
+            seqScans: null,
+            indexScans: null,
+          }
+        }
+        return await client.getTableLastAccess(args.table, exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_search_view_definitions',
+      description:
+        'Search views by name or definition text (case-insensitive, supports % and _ wildcards). PostgreSQL returns public-schema views; MySQL returns current-database views. Read-only.',
+      parameters: {
+        pattern: { type: 'string', required: true, description: 'View name or definition text pattern, e.g. "sales" or "%active%"' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            matches: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  schema: { type: 'string', description: 'Schema/database name' },
+                  name: { type: 'string', description: 'View name' },
+                  definition: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'View definition SQL' },
+                },
+              },
+              description: 'Matching view definitions',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const matches = value.matches ?? []
+          if (matches.length === 0) return [{ type: 'text', text: 'No matching view definitions found.' }]
+          const lines = ['schema\tview\tdefinition']
+          lines.push('---\t---\t---')
+          for (const m of matches) {
+            const preview = (m.definition ?? '').replace(/\s+/g, ' ').slice(0, 200)
+            lines.push(`${m.schema}\t${m.name}\t${preview}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Search view definitions: ${args.pattern}`, kind: 'search' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { matches?: unknown[] }
+        return { card: 'generic', title: `${v.matches?.length ?? 0} view definition(s)` }
+      },
+      async execute(args, exec) {
+        return { matches: await client.searchViewDefinitions(args.pattern, exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_search_routine_definitions',
+      description:
+        'Search functions and stored procedures by name or source/body text (case-insensitive, supports % and _ wildcards). PostgreSQL searches pg_proc source and returns pg_get_functiondef; MySQL searches information_schema.routines and returns SHOW CREATE FUNCTION/PROCEDURE. Read-only.',
+      parameters: {
+        pattern: { type: 'string', required: true, description: 'Routine name or source text pattern, e.g. "audit" or "INSERT INTO"' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            matches: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  schema: { type: 'string', description: 'Schema/database name' },
+                  name: { type: 'string', description: 'Routine name' },
+                  kind: { type: 'string', enum: ['function', 'procedure'], description: 'Routine kind' },
+                  arguments: { type: 'string', description: 'Argument signature where available' },
+                  language: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Implementation language' },
+                  source: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Full routine definition/source where available' },
+                },
+              },
+              description: 'Matching routine definitions',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const matches = value.matches ?? []
+          if (matches.length === 0) return [{ type: 'text', text: 'No matching routine definitions found.' }]
+          const lines = ['schema\tname\tkind\targuments\tlanguage\tsource']
+          lines.push('---\t---\t---\t---\t---\t---')
+          for (const m of matches) {
+            const preview = (m.source ?? '').replace(/\s+/g, ' ').slice(0, 180)
+            lines.push(`${m.schema}\t${m.name}\t${m.kind}\t${m.arguments ?? ''}\t${m.language ?? ''}\t${preview}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Search routine definitions: ${args.pattern}`, kind: 'search' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { matches?: unknown[] }
+        return { card: 'generic', title: `${v.matches?.length ?? 0} routine definition(s)` }
+      },
+      async execute(args, exec) {
+        return { matches: await client.searchRoutineDefinitions(args.pattern, exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_search_trigger_definitions',
+      description:
+        'Search triggers by trigger name, table, or action statement text (case-insensitive, supports % and _ wildcards). PostgreSQL returns pg_get_triggerdef; MySQL returns information_schema.triggers action statements. Read-only.',
+      parameters: {
+        pattern: { type: 'string', required: true, description: 'Trigger name, table, or action text pattern, e.g. "audit" or "NEW.status"' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            matches: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  schema: { type: 'string', description: 'Schema/database name' },
+                  table: { type: 'string', description: 'Table name' },
+                  name: { type: 'string', description: 'Trigger name' },
+                  timing: { type: 'string', description: 'BEFORE, AFTER, or INSTEAD OF' },
+                  event: { type: 'string', description: 'Trigger event' },
+                  definition: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Trigger definition or action statement' },
+                },
+              },
+              description: 'Matching trigger definitions',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const matches = value.matches ?? []
+          if (matches.length === 0) return [{ type: 'text', text: 'No matching trigger definitions found.' }]
+          const lines = ['schema\ttable\tname\ttiming\tevent\tdefinition']
+          lines.push('---\t---\t---\t---\t---\t---')
+          for (const m of matches) {
+            const preview = (m.definition ?? '').replace(/\s+/g, ' ').slice(0, 180)
+            lines.push(`${m.schema}\t${m.table}\t${m.name}\t${m.timing}\t${m.event}\t${preview}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Search trigger definitions: ${args.pattern}`, kind: 'search' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { matches?: unknown[] }
+        return { card: 'generic', title: `${v.matches?.length ?? 0} trigger definition(s)` }
+      },
+      async execute(args, exec) {
+        return { matches: await client.searchTriggerDefinitions(args.pattern, exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_search_constraint_definitions',
+      description:
+        'Search primary key, unique, and check constraints by name or definition text (case-insensitive, supports % and _ wildcards). PostgreSQL returns pg_get_constraintdef; MySQL returns CHECK_CLAUSE and constructs PK/UNIQUE definitions from catalog columns (marked simplified). Read-only.',
+      parameters: {
+        pattern: { type: 'string', required: true, description: 'Constraint name or definition text pattern, e.g. "pkey" or "age >="' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            matches: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  schema: { type: 'string', description: 'Schema/database name' },
+                  table: { type: 'string', description: 'Table name' },
+                  name: { type: 'string', description: 'Constraint name' },
+                  type: { type: 'string', enum: ['PRIMARY KEY', 'UNIQUE', 'CHECK'], description: 'Constraint type' },
+                  definition: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Constraint definition' },
+                  simplified: { type: 'boolean', description: 'True when PostgreSQL DDL was generated from catalog metadata or MySQL PK/UNIQUE definition was constructed' },
+                },
+              },
+              description: 'Matching constraint definitions',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const matches = value.matches ?? []
+          if (matches.length === 0) return [{ type: 'text', text: 'No matching constraint definitions found.' }]
+          const lines = ['schema\ttable\ttype\tname\tdefinition\tgenerated']
+          lines.push('---\t---\t---\t---\t---\t---')
+          for (const m of matches) {
+            const preview = (m.definition ?? '').replace(/\s+/g, ' ').slice(0, 180)
+            lines.push(`${m.schema}\t${m.table}\t${m.type}\t${m.name}\t${preview}\t${m.simplified ? 'yes' : 'no'}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Search constraint definitions: ${args.pattern}`, kind: 'search' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { matches?: unknown[] }
+        return { card: 'generic', title: `${v.matches?.length ?? 0} constraint definition(s)` }
+      },
+      async execute(args, exec) {
+        return { matches: await client.searchConstraintDefinitions(args.pattern, exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_search_table_ddl',
+      description:
+        'Search tables by name and return CREATE TABLE DDL (case-insensitive, supports % and _ wildcards). PostgreSQL returns simplified DDL generated from information_schema; MySQL returns server SHOW CREATE TABLE output. Read-only.',
+      parameters: {
+        pattern: { type: 'string', required: true, description: 'Table name pattern, e.g. "order" or "%audit_%"' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            matches: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  schema: { type: 'string', description: 'Schema/database name' },
+                  table: { type: 'string', description: 'Table name' },
+                  definition: { type: 'string', description: 'CREATE TABLE DDL' },
+                  simplified: { type: 'boolean', description: 'True when PostgreSQL DDL was generated from catalog metadata instead of server output' },
+                },
+              },
+              description: 'Matching table DDL',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const matches = value.matches ?? []
+          if (matches.length === 0) return [{ type: 'text', text: 'No matching table DDL found.' }]
+          const lines = ['schema\ttable\tgenerated\tdefinition']
+          lines.push('---\t---\t---\t---')
+          for (const m of matches) {
+            const preview = (m.definition ?? '').replace(/\s+/g, ' ').slice(0, 220)
+            lines.push(`${m.schema}\t${m.table}\t${m.simplified ? 'yes' : 'no'}\t${preview}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Search table DDL: ${args.pattern}`, kind: 'search' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { matches?: unknown[] }
+        return { card: 'generic', title: `${v.matches?.length ?? 0} table DDL(s)` }
+      },
+      async execute(args, exec) {
+        return { matches: await client.searchTableDefinitions(args.pattern, exec.signal) }
+      },
+    }),
+
+    defineTool({
+      name: 'sql_get_table_dependencies',
+      description:
+        'Find objects that reference a table: views/materialized views, routines, triggers, and incoming foreign keys. PostgreSQL uses pg_depend plus routine source text; MySQL uses information_schema dependency catalogs with definition-text fallback. Read-only.',
+      parameters: {
+        table: { type: 'string', required: true, description: 'Table name to inspect for dependents' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            table: { type: 'string', description: 'Table name' },
+            dependencies: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: { type: 'string', enum: ['table', 'view', 'materialized view', 'routine', 'trigger', 'foreign key'], description: 'Dependent object kind' },
+                  name: { type: 'string', description: 'Dependent object name' },
+                  detail: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Dependency detail such as trigger definition or foreign key mapping' },
+                  source: { type: 'string', enum: ['catalog', 'definition text'], description: 'Whether the dependency came from catalog metadata or best-effort definition text' },
+                },
+              },
+              description: 'Objects referencing the table',
+            },
+          },
+        },
+        render: renderDependencies,
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Dependencies of ${args.table}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { dependencies?: unknown[] }
+        return { card: 'generic', title: `${v.dependencies?.length ?? 0} dependencie(s)` }
+      },
+      async execute(args, exec) {
+        return await client.getTableDependencies(args.table, exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_get_view_dependencies',
+      description:
+        'Find tables, views, and routines referenced by a view. PostgreSQL reads pg_depend catalog dependencies; MySQL reads VIEW_TABLE_USAGE/VIEW_ROUTINE_USAGE with definition-text fallback. Read-only.',
+      parameters: {
+        view: { type: 'string', required: true, description: 'View name to inspect' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            view: { type: 'string', description: 'View name' },
+            dependencies: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: { type: 'string', enum: ['table', 'view', 'materialized view', 'routine', 'trigger', 'foreign key'], description: 'Referenced object kind' },
+                  name: { type: 'string', description: 'Referenced object name' },
+                  detail: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Definition context when available' },
+                  source: { type: 'string', enum: ['catalog', 'definition text'], description: 'Dependency source' },
+                },
+              },
+              description: 'Objects used by the view',
+            },
+          },
+        },
+        render: renderDependencies,
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Dependencies used by ${args.view}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { dependencies?: unknown[] }
+        return { card: 'generic', title: `${v.dependencies?.length ?? 0} dependencie(s)` }
+      },
+      async execute(args, exec) {
+        return await client.getViewDependencies(args.view, exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_get_routine_dependencies',
+      description:
+        'Find tables, views, and routines referenced inside a function or stored procedure source/body. PostgreSQL scans pg_proc source text; MySQL uses ROUTINE_TABLE_USAGE/ROUTINE_ROUTINE_USAGE with definition-text fallback. Best-effort for dynamic SQL. Read-only.',
+      parameters: {
+        name: { type: 'string', required: true, description: 'Function/procedure name to inspect' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            name: { type: 'string', description: 'Routine name' },
+            dependencies: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: { type: 'string', enum: ['table', 'view', 'materialized view', 'routine', 'trigger', 'foreign key'], description: 'Referenced object kind' },
+                  name: { type: 'string', description: 'Referenced object name' },
+                  detail: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Source context when available' },
+                  source: { type: 'string', enum: ['catalog', 'definition text'], description: 'Dependency source' },
+                },
+              },
+              description: 'Objects used by the routine',
+            },
+          },
+        },
+        render: renderDependencies,
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Dependencies used by ${args.name}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { dependencies?: unknown[] }
+        return { card: 'generic', title: `${v.dependencies?.length ?? 0} dependencie(s)` }
+      },
+      async execute(args, exec) {
+        return await client.getRoutineDependencies(args.name, exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_get_routine_references',
+      description:
+        'Find functions and stored procedures whose source/body references a given table, view, or routine. Useful for drop/rename impact analysis. Both databases use best-effort source text search. Read-only.',
+      parameters: {
+        object: { type: 'string', required: true, description: 'Table, view, or routine name to search for in routine sources' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            object: { type: 'string', description: 'Searched object name' },
+            references: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  schema: { type: 'string', description: 'Schema/database name' },
+                  name: { type: 'string', description: 'Routine name' },
+                  kind: { type: 'string', enum: ['function', 'procedure'], description: 'Routine kind' },
+                  detail: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Source context around the reference' },
+                },
+              },
+              description: 'Routines referencing the object',
+            },
+          },
+        },
+        render: (_args, value) => {
+          const references = value.references ?? []
+          if (references.length === 0) return [{ type: 'text', text: 'No routine source references found.' }]
+          const lines = ['schema\tname\tkind\tdetail']
+          lines.push('---\t---\t---\t---')
+          for (const r of references) {
+            lines.push(`${r.schema}\t${r.name}\t${r.kind}\t${r.detail ?? ''}`)
+          }
+          return [{ type: 'text', text: lines.join('\n') }]
+        },
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Routines referencing ${args.object}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { references?: unknown[] }
+        return { card: 'generic', title: `${v.references?.length ?? 0} routine(s)` }
+      },
+      async execute(args, exec) {
+        return await client.getRoutineReferences(args.object, exec.signal)
+      },
+    }),
+
+    defineTool({
+      name: 'sql_get_trigger_dependencies',
+      description:
+        'Find the table and fired routine(s) used by a trigger. PostgreSQL reads pg_trigger and the trigger function; MySQL reads information_schema.triggers plus TRIGGER_ROUTINE_USAGE with definition-text fallback. Read-only.',
+      parameters: {
+        name: { type: 'string', required: true, description: 'Trigger name to inspect' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            name: { type: 'string', description: 'Trigger name' },
+            dependencies: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: { type: 'string', enum: ['table', 'view', 'materialized view', 'routine', 'trigger', 'foreign key'], description: 'Dependency kind' },
+                  name: { type: 'string', description: 'Dependency name' },
+                  detail: { oneOf: [{ type: 'string' }, { type: 'null' }], description: 'Trigger definition context' },
+                  source: { type: 'string', enum: ['catalog', 'definition text'], description: 'Dependency source' },
+                },
+              },
+              description: 'Table and routines used by the trigger',
+            },
+          },
+        },
+        render: renderDependencies,
+      },
+      presentCall(args): ToolCallView {
+        return { card: 'generic', title: `Dependencies of trigger ${args.name}`, kind: 'read' }
+      },
+      presentResult(_args, result): ToolResultView | undefined {
+        const v = result as unknown as { dependencies?: unknown[] }
+        return { card: 'generic', title: `${v.dependencies?.length ?? 0} dependencie(s)` }
+      },
+      async execute(args, exec) {
+        return await client.getTriggerDependencies(args.name, exec.signal)
+      },
+    }),
+  ]
+}
+
+
+function renderDependencies(_args: unknown, value: {
+  dependencies?: Array<{
+    kind?: string
+    name?: string
+    detail?: string | null
+    source?: string
+  }>
+}): Array<{ type: 'text'; text: string }> {
+  const dependencies = value.dependencies ?? []
+  if (dependencies.length === 0) return [{ type: 'text', text: '(no dependencies found)' }]
+  const lines = ['kind\tname\tsource\tdetail']
+  lines.push('---\t---\t---\t---')
+  for (const d of dependencies) {
+    const preview = (d.detail ?? '').replace(/\s+/g, ' ').slice(0, 220)
+    lines.push(`${d.kind}\t${d.name}\t${d.source}\t${preview}`)
+  }
+  return [{ type: 'text', text: lines.join('\n') }]
+}
+
+function renderQueryResult(_args: unknown, value: {
+  columns?: string[]
+  rows?: Array<Record<string, unknown>>
+  rowCount?: number
+  truncated?: boolean
+}): Array<{ type: 'text'; text: string }> {
+  const columns = value.columns ?? []
+  const rows = value.rows ?? []
+  const lines: string[] = []
+  if (columns.length > 0) {
+    lines.push(columns.join('\t'))
+    lines.push(columns.map(() => '---').join('\t'))
+    for (const row of rows) {
+      lines.push(columns.map((c: string) => formatCell(row[c])).join('\t'))
+    }
+  }
+  if (value.truncated) {
+    lines.push(`(truncated: showing ${rows.length} of ${value.rowCount} rows)`)
+  } else {
+    lines.push(`(${value.rowCount} rows)`)
+  }
+  return [{ type: 'text', text: lines.join('\n') }]
+}
+
+function formatCell(value: unknown): string {
+  if (value === null || value === undefined) return 'NULL'
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
+
+function formatBytes(value: number): string {
+  if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(2)} GiB`
+  if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(2)} MiB`
+  if (value >= 1024) return `${(value / 1024).toFixed(2)} KiB`
+  return `${value} B`
+}

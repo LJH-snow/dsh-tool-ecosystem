@@ -1,0 +1,14 @@
+# dsh-tool-browser 组合示例
+- name: '@libai168/dsh-tool-browser'
+  config:
+    # 默认只允许 localhost 和 127.0.0.1；这里加入一个演示站点。
+    allowedOrigins:
+      - 'http://localhost:*'
+      - 'http://127.0.0.1:*'
+      - 'https://example.com'
+    browserType: chromium
+    headless: true
+    timeoutMs: 30000
+    maxSessions: 4
+    maxTextBytes: 12000
+    saveDir: '.dsh-browser'

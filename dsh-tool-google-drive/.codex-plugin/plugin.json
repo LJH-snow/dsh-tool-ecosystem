@@ -1,0 +1,17 @@
+{
+  "name": "dsh-tool-google-drive",
+  "version": "0.4.0",
+  "description": "Google Workspace read-only tools for DeepSeek Harness",
+  "author": {
+    "name": "Local developer"
+  },
+  "interface": {
+    "displayName": "Dsh Tool Google Drive",
+    "shortDescription": "Search/export Drive files and read Docs/Sheets.",
+    "longDescription": "Google Workspace tools for DeepSeek Harness with credential checks, Drive file search and export, Shared Drive metadata, Google Docs text extraction, and Google Sheets metadata/value reads.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Help me search Drive, export files, and read Google Docs or Sheets."
+  }
+}

@@ -1,0 +1,53 @@
+# dsh-tool-cloudflare 开发文档
+
+## 1. 项目概览
+
+| 项目 | 说明 |
+|---|---|
+| 项目名 | dsh-tool-cloudflare |
+| 发布名 | @libai168/dsh-tool-cloudflare |
+| 定位 | DeepSeek Harness 的 Cloudflare 只读 REST 插件 |
+| 工具数 | 5 |
+| 默认 API | https://api.cloudflare.com/client/v4 |
+| 认证 | Scoped API Token，Authorization: Bearer |
+
+## 2. 端点映射
+
+| 工具 | 端点 |
+|---|---|
+| cf_auth_test | GET /user/tokens/verify |
+| cf_list_zones | GET /zones |
+| cf_list_dns_records | GET /zones/{zone_id}/dns_records |
+| cf_list_workers | GET /accounts/{account_id}/workers/scripts |
+| cf_list_worker_deployments | GET /accounts/{account_id}/workers/scripts/{script_name}/deployments |
+
+Cloudflare response envelope 的 success 必须为 true；result_info 会被映射为分页字段。客户端不支持旧的 Global API Key 认证。
+
+## 3. 设计决策
+
+### 3.1 只读边界
+
+首版只提供观察工具，避免 Agent 误删 DNS、上传代码或触发生产部署。写操作若以后加入，需要独立的权限说明、工具 kind edit 和更强的目标确认。
+
+### 3.2 字段白名单
+
+Zone、DNS、Worker 和部署响应都经过映射。插件不会把原始 API 对象、权限信息、脚本源码或凭据带入模型结果。
+
+### 3.3 测试注入
+
+CloudflareClient 接受 fetchImpl，测试覆盖 Bearer header、URL/query、Cloudflare envelope、HTTP 错误、分页、字段映射和缺少 account/zone id。
+
+### 3.4 endpoint 安全校验
+
+`baseUrl` 规范化为 origin + 路径前缀，禁止 credentials、query 和 fragment。每次请求前用 `src/url-security.ts` 做 fail-closed 目标校验：拒绝 localhost/.local 名称、环回、私有、链路本地、CGNAT、组播、保留及全部 IANA 特殊用途地址段，域名 DNS 结果含任一此类地址即拒绝。阻断清单（18 个 IPv4 + 16 个 IPv6）与 IANA 注册表对齐，`src/url-security.ts` 由 `.verify/url-security.template.ts` 生成，不得单独修改。`lookupImpl` 仅作测试注入点，不进入插件配置接口。
+
+## 4. 发布前验证
+
+~~~sh
+npm run typecheck
+npm test
+npm run build
+npm pack --dry-run
+~~~
+
+npm 包包含 lib、双语 README、DEVELOPMENT、examples 和 LICENSE。发布使用 npm publish --access public。

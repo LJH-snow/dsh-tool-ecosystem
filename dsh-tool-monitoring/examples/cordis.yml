@@ -1,0 +1,32 @@
+# dsh-tool-monitoring 组合示例
+# 用法:在 dsh 的组合配置中引入本插件(示例片段,按你的部署组合调整)
+- name: 'github:LJH-snow/dsh-tool-monitoring'
+  config:
+    # Prometheus 默认 http://localhost:9090
+    # prometheusBaseUrl: 'http://prometheus:9090'
+    # prometheusToken: 'Bearer token or plain token'
+    # prometheusUsername: ''
+    # prometheusPassword: ''
+    # Alertmanager 默认 http://localhost:9093
+    # alertmanagerBaseUrl: 'http://alertmanager:9093'
+    # alertmanagerToken: ''
+    # alertmanagerUsername: ''
+    # alertmanagerPassword: ''
+    # Loki 默认 http://localhost:3100
+    # lokiBaseUrl: 'http://loki:3100'
+    # lokiToken: ''
+    # lokiUsername: ''
+    # lokiPassword: ''
+    # lokiTenantId: ''
+    # Grafana 默认 http://localhost:3000
+    # grafanaBaseUrl: 'http://grafana:3000'
+    # grafanaToken: ''
+    # grafanaUsername: ''
+    # grafanaPassword: ''
+    # 非本地 HTTP endpoint 会拒绝；仅可信本地网络才设置为 true
+    allowInsecureHttp: false
+    # 原始 YAML/JSON 输出上限（字节）
+    maxOutputBytes: 131072
+    # 写操作默认关闭;确认权限后再开启
+    allowWrite: true
+    timeoutMs: 15000

@@ -1,0 +1,261 @@
+{
+  "generatedAt": "2026-10-08T16:34:46.196Z",
+  "plugins": [
+    {
+      "plugin": "dsh-tool-airtable",
+      "version": "0.2.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-aws",
+      "version": "0.3.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-browser",
+      "version": "0.1.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-cloudflare",
+      "version": "0.2.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-context7",
+      "version": "0.2.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-discord",
+      "version": "0.2.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-dockerhub",
+      "version": "0.2.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-feishu",
+      "version": "0.2.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-figma",
+      "version": "0.2.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-firecrawl",
+      "version": "0.2.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-github",
+      "version": "0.2.1",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-gitlab",
+      "version": "0.2.1",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-gmail",
+      "version": "0.4.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-google-calendar",
+      "version": "0.1.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-google-drive",
+      "version": "0.4.1",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-jira",
+      "version": "0.3.1",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-kubernetes",
+      "version": "0.2.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-linear",
+      "version": "0.4.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-memory",
+      "version": "0.1.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-microsoft-365",
+      "version": "0.1.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-mongodb",
+      "version": "0.2.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-monitoring",
+      "version": "0.19.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-n8n",
+      "version": "0.4.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-notion",
+      "version": "0.4.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-pagerduty",
+      "version": "0.3.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-redis",
+      "version": "0.1.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-sentry",
+      "version": "0.2.1",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-shopify",
+      "version": "0.1.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-slack",
+      "version": "0.4.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-sql",
+      "version": "0.2.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-stripe",
+      "version": "0.3.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-zendesk",
+      "version": "0.3.1",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    }
+  ]
+}

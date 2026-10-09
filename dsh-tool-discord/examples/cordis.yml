@@ -1,0 +1,11 @@
+# dsh-tool-discord Cordis 组合示例
+# Bot token 应来自本机安全配置，不要提交真实凭据。
+- name: '@libai168/dsh-tool-discord'
+  config:
+    # 原始 Discord Bot token；插件会在请求中加入 Bot 认证方案。
+    token: 'replace-with-a-discord-bot-token'
+    # 可选，默认 https://discord.com/api/v10。
+    # 测试代理应只接收本地假 token，不要转发生产凭据。
+    # baseUrl: 'https://discord.com/api/v10'
+    # 可选请求超时，单位毫秒，默认 15000。
+    # timeoutMs: 15000

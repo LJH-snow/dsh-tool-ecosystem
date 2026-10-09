@@ -1,0 +1,63 @@
+{
+  "name": "@libai168/dsh-tool-monitoring",
+  "description": "Monitoring and alerting tools for DeepSeek Harness: Prometheus queries, targets, alerts, rules, series, labels, metric metadata, TSDB, config and runtime status, discovered Alertmanagers, Alertmanager, Loki LogQL, Grafana dashboards, admin stats, plugins, dashboard versions and snapshots, alert rules, annotations, service accounts, teams, organizations, org users, org quotas, folder, dashboard and datasource permissions, access control roles, built-in roles, user and team role assignments, user/team permissions, org preferences, current user context, library elements, playlists, current org, contact points and notification policies, plus observability status",
+  "version": "0.19.0",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "@types/node": "^26.2.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.19"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "awesome-dsh-plugin",
+    "cordis",
+    "prometheus",
+    "alertmanager",
+    "loki",
+    "logql",
+    "monitoring",
+    "alerts",
+    "observability",
+    "agent",
+    "plugin"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LJH-snow/dsh-tool-monitoring.git"
+  },
+  "homepage": "https://github.com/LJH-snow/dsh-tool-monitoring#readme"
+}

@@ -1,0 +1,184 @@
+# dsh-tool-gitlab
+
+[English](README.md) | [中文](README.zh.md)
+
+面向 **DeepSeek Harness**(`dsh`)的 Cordis 工具插件,为 Agent 提供企业级 GitLab 能力:端到端的合并请求(MR)评审(变更、讨论、批准)、CI/CD 流水线观测与触发、组/项目成员与权限审计、个人 Todo 工作台——全部通过自然语言完成。
+
+基于官方"一切皆插件"架构(`ctx.tools.register(defineTool(...))`),遵循官方 [adding-a-tool](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/cookbook/adding-a-tool.md) 契约。专门为 **自托管 GitLab**(通过 `baseUrl` 覆盖)和 **企业治理工作流** 设计。
+
+## 安装
+
+直接从 GitHub 安装(无需发布 npm):
+
+```sh
+npm install github:LJH-snow/dsh-tool-gitlab
+# 或指定分支/标签
+npm install github:LJH-snow/dsh-tool-gitlab#main
+```
+
+或从本地安装:
+
+```sh
+git clone https://github.com/LJH-snow/dsh-tool-gitlab
+cd dsh-tool-gitlab
+npm install && npm run build   # 构建到 lib/
+npm install /path/to/dsh-tool-gitlab
+```
+
+> 发布到 npm 后也可通过 `npm install @libai168/dsh-tool-gitlab` 安装。
+
+需要 `@deepseek-ai/cordis`(^4.0.1)和 `@deepseek-ai/dsh-tools`(^0.1.0-rc.6)作为 peer 依赖,由 dsh 运行时提供。
+
+## 配置
+
+在 dsh 组合配置(`cordis.yml`)中加载插件:
+
+```yaml
+- name: 'dsh-tool-gitlab'
+  config:
+    token: 'glpat_xxx'      # GitLab PAT(可选;写操作、MR 批准、CI 触发、个人工具需要)
+    baseUrl: 'https://gitlab.com/api/v4'   # 可选;自托管时指向你的实例,如 https://gitlab.example.com/api/v4
+    timeoutMs: 15000        # 可选,请求超时毫秒数(默认 15000)
+```
+
+完整示例见 [examples/cordis.yml](examples/cordis.yml)。
+
+> 安全:只读工具无需 token;写工具、MR 批准/审批规则管理、流水线触发/定时任务、保护分支、私仓代码搜索、当前用户与 Todo 需要 token。建议使用最小权限 PAT(按需选择 `api`、`read_repository` 等 scope),切勿提交到仓库。
+
+## 与 GitHub 插件的差异化(企业向)
+
+| 领域 | 本插件(GitLab) | GitHub 插件 |
+|---|---|---|
+| MR 全生命周期 | `gitlab_get_mr_changes`(逐文件 diff)、`gitlab_list_mr_discussions`(评审讨论线)、`gitlab_reply_mr_discussion`、`gitlab_resolve_mr_discussion`、`gitlab_get_mr_approvals`、`gitlab_list/create/update/delete_mr_approval_rule`(规则管理)、`gitlab_approve_mr`、`gitlab_merge_mr`(squash) | 仅 PR 草稿 + 合并 |
+| CI/CD | `gitlab_list_pipelines`、`gitlab_get_pipeline`(stages)、`gitlab_get_job_log`(完整日志)、`gitlab_trigger_pipeline`、`gitlab_list/create/update/delete_pipeline_schedule`(cron 自动化) | 仅 workflow 运行列表 |
+| 组织与治理 | `gitlab_list_group_projects`、`gitlab_list_subgroups`、`gitlab_list_group_members`、`gitlab_list_project_members`(Guest→Owner 访问级别)、`gitlab_add_*_member`、`gitlab_update_*_member`、`gitlab_remove_*_member`、`gitlab_list/protect/unprotect branch` | — |
+| 项目管理 | `gitlab_create_project`、`gitlab_delete_project`(删除类 UI 卡片) | — |
+| 组管理 | `gitlab_create_group`、`gitlab_delete_group`;`gitlab_transfer_project`、`gitlab_archive_project`、`gitlab_unarchive_project` | — |
+| 自动化与 CI 配置 | `gitlab_list/create/delete_project_webhook`、`gitlab_list/create/update/delete_project_variable`(值永不暴露) | — |
+| 个人工作台 | `gitlab_list_todos`(指派/待批准/被提及)、`gitlab_get_current_user` | — |
+| 发布与 DevOps | `gitlab_list_releases`、`gitlab_list_milestones`、`gitlab_list_environments`、`gitlab_list_labels` | 仅 releases 列表 |
+| Runner、容器与备份 | Runner 增删/分配、registry 仓库与 tag、远程镜像(URL 打码)、项目导出状态 | — |
+| 自托管 | `baseUrl` 覆盖指向内网 GitLab | GitHub Enterprise baseUrl |
+| 评审 UX | MR 变更为 `search` 卡片、写文件为 `diff` 卡片、Job 日志为 `terminal` 卡片 | generic/search 卡片 |
+
+每次请求前都会校验目标地址。链路本地地址（`169.254.0.0/16`、`fe80::/10`，含其 IPv4-mapped 与 NAT64 形式）始终被拒绝——它们不可能是合法的 API 端点，且包含云元数据地址。内网自建端点默认保持可用。设置 `enforcePublicEndpoint: true` 可额外要求主机公网可达；该模式还会解析普通域名，并拒绝环回、私有、CGNAT、组播、保留以及全部 IANA 特殊用途地址段。
+
+## 工具列表
+
+### 只读
+
+| 工具 | 功能 | Token |
+|---|---|---|
+| `gitlab_get_project` | 项目元信息(id、完整路径、star、默认分支、可见性) | 否 |
+| `gitlab_search_projects` | 按名称搜索项目(可限定组范围) | 否 |
+| `gitlab_list_group_projects` | 组内项目列表(可含子组) | 否 |
+| `gitlab_list_subgroups` | 子组列表(组织层级) | 否 |
+| `gitlab_list_group_members` | 组成员及访问级别(Guest/Reporter/Developer/Maintainer/Owner) | 否 |
+| `gitlab_list_project_members` | 项目成员及访问级别 | 否 |
+| `gitlab_list_issues` | 列出 issue(状态/指派人过滤) | 否 |
+| `gitlab_get_issue` | issue 详情(含描述) | 否 |
+| `gitlab_list_mrs` | 列出 MR(状态过滤、draft/冲突标记) | 否 |
+| `gitlab_get_mr` | MR 详情:合并状态、CI 流水线、冲突、squash | 否 |
+| `gitlab_get_mr_changes` | 变更文件及逐文件 diff | 否 |
+| `gitlab_get_mr_approvals` | 批准状态:批准人、还需/已需数量、逐规则状态 | 否 |
+| `gitlab_list_mr_approval_rules` | MR 审批规则(可批准人、所需数量) | 是 |
+| `gitlab_list_mr_discussions` | 评审讨论线(含评论与解决状态) | 否 |
+| `gitlab_list_commits` | 提交列表(分支/作者过滤) | 否 |
+| `gitlab_get_file` | 读取仓库文件(base64 解码、支持 ref) | 否 |
+| `gitlab_list_branches` | 分支列表及最新 SHA | 否 |
+| `gitlab_list_labels` | 项目标签及颜色 | 否 |
+| `gitlab_list_milestones` | 里程碑(截止日期与状态) | 否 |
+| `gitlab_list_releases` | Releases(标签、作者、日期) | 否 |
+| `gitlab_list_environments` | 部署环境(状态与外部 URL) | 否 |
+| `gitlab_list_pipelines` | CI/CD 流水线(ref/status 过滤) | 否 |
+| `gitlab_get_pipeline` | 流水线详情(含 stages) | 否 |
+| `gitlab_get_job_log` | Job 完整日志(UI 显示 terminal 卡片) | 否* |
+| `gitlab_list_pipeline_schedules` | 定时流水线定义(cron、时区、上次运行) | 是 |
+| `gitlab_search_code` | 项目内代码搜索(blob) | 私仓需要 |
+| `gitlab_get_current_user` | 当前认证用户 | 是 |
+| `gitlab_list_todos` | 待办(指派/待批准/被提及) | 是 |
+| `gitlab_list_project_webhooks` | Webhook URL 与启用事件类型(仅元数据) | 私有项目 |
+| `gitlab_list_project_variables` | CI/CD 变量 key 与选项——值永不返回 | 私有项目 |
+| `gitlab_list_protected_branches` | 保护分支的 push/merge/unprotect 访问级别 | 是 |
+| `gitlab_list_runners` | 项目已分配的 Runner(状态/类型/访问级别) | 私有项目 |
+| `gitlab_list_registry_repositories` | 容器仓库列表(含 tag 数) | 私有项目 |
+| `gitlab_list_registry_tags` | 容器仓库 tag 列表(含 digest/大小) | 私有项目 |
+| `gitlab_list_project_mirrors` | 远程镜像设置;URL 与凭据永不返回 | 是 |
+| `gitlab_get_project_export_status` | 查询异步项目导出状态 | 是 |
+
+### 写操作
+
+| 工具 | 功能 | Token |
+|---|---|---|
+| `gitlab_create_issue` | 创建 issue(支持 labels) | 是 |
+| `gitlab_comment_issue` | 评论 issue | 是 |
+| `gitlab_update_issue` | 打开/关闭 issue | 是 |
+| `gitlab_create_mr` | 创建 MR(支持 draft) | 是 |
+| `gitlab_comment_mr` | 评论 MR | 是 |
+| `gitlab_reply_mr_discussion` | 回复评审讨论线 | 是 |
+| `gitlab_resolve_mr_discussion` | 解决/取消解决评审讨论线 | 是 |
+| `gitlab_create_mr_approval_rule` | 创建 MR 审批规则(用户/组/所需数量) | 是 |
+| `gitlab_update_mr_approval_rule` | 更新 MR 审批规则 | 是 |
+| `gitlab_delete_mr_approval_rule` | 删除 MR 审批规则(删除类 UI 卡片) | 是 |
+| `gitlab_approve_mr` | 批准 MR(审批流) | 是 |
+| `gitlab_merge_mr` | 合并 MR(支持 squash) | 是 |
+| `gitlab_trigger_pipeline` | 为 ref 触发 CI/CD 流水线 | 是 |
+| `gitlab_create_pipeline_schedule` | 使用 cron 表达式创建定时流水线 | 是 |
+| `gitlab_update_pipeline_schedule` | 更新或暂停定时流水线 | 是 |
+| `gitlab_delete_pipeline_schedule` | 删除定时流水线(删除类 UI 卡片) | 是 |
+| `gitlab_create_branch` | 从 ref 创建分支 | 是 |
+| `gitlab_write_file` | 通过 commit 创建/更新文件(UI 显示 diff 卡片) | 是 |
+| `gitlab_protect_branch` | 按 push/merge/unprotect 级别保护分支 | 是 |
+| `gitlab_unprotect_branch` | 取消分支保护(删除类 UI 卡片) | 是 |
+| `gitlab_create_project` | 创建项目(可见性/命名空间/初始化 README) | 是 |
+| `gitlab_delete_project` | 永久删除项目(删除类 UI 卡片) | 是 |
+| `gitlab_add_group_member` | 添加组成员(guest→owner) | 是 |
+| `gitlab_update_group_member` | 修改组成员访问级别 | 是 |
+| `gitlab_remove_group_member` | 移除组成员(删除类 UI 卡片) | 是 |
+| `gitlab_add_project_member` | 添加项目成员(guest→owner) | 是 |
+| `gitlab_update_project_member` | 修改项目成员访问级别 | 是 |
+| `gitlab_remove_project_member` | 移除项目成员(删除类 UI 卡片) | 是 |
+| `gitlab_create_group` | 创建组(可见性/path) | 是 |
+| `gitlab_delete_group` | 永久删除组及其全部项目(删除类 UI 卡片) | 是 |
+| `gitlab_transfer_project` | 转移项目到其他命名空间(move 类 UI 卡片) | 是 |
+| `gitlab_archive_project` | 归档项目(全员只读) | 是 |
+| `gitlab_unarchive_project` | 取消归档项目 | 是 |
+| `gitlab_create_project_webhook` | 创建 webhook 推送事件到 URL | 是 |
+| `gitlab_delete_project_webhook` | 删除 webhook(删除类 UI 卡片) | 是 |
+| `gitlab_create_project_variable` | 创建 CI/CD 变量(值只发送一次,不回显) | 是 |
+| `gitlab_update_project_variable` | 更新 CI/CD 变量(值不回显) | 是 |
+| `gitlab_delete_project_variable` | 删除 CI/CD 变量(删除类 UI 卡片) | 是 |
+| `gitlab_enable_project_runner` | 为项目启用已有 Runner | 是 |
+| `gitlab_disable_project_runner` | 将 Runner 从项目解除分配 | 是 |
+| `gitlab_delete_runner` | 永久删除 Runner(删除类 UI 卡片) | 是 |
+| `gitlab_delete_registry_repository` | 删除容器仓库及其全部 tag(删除类 UI 卡片) | 是 |
+| `gitlab_delete_registry_tag` | 删除指定容器镜像 tag(删除类 UI 卡片) | 是 |
+| `gitlab_create_project_mirror` | 创建远程镜像;URL 只发送一次、永不回显 | 是 |
+| `gitlab_start_project_export` | 启动异步项目导出 | 是 |
+
+### 行为约定(遵循官方 execute 契约)
+
+- **业务失败用规范值**:项目/issue/MR 不存在 → `{ found: false }`;MR 创建失败(分支缺失/已存在)→ `{ created: false, reason }`;合并被阻断(冲突/检查未过)→ `{ merged: false, reason }`;未配置 token → 明确的 `reason`/`authenticated: false`。
+- **仅基础设施错误抛异常**:token 无效(401)、禁止访问(403)、限流(429)。
+- **可取消**:所有请求透传 `exec.signal`,默认 15 秒超时。
+
+## 开发
+
+```sh
+npm install
+npm run typecheck   # 类型检查
+npm test            # 单元测试(vitest)
+npm run build       # 构建到 lib/
+```
+
+开发计划与决策见 [DEVELOPMENT.md](DEVELOPMENT.md)。
+
+## 发布
+
+1. 包发布到你的 npm scope:`@libai168/dsh-tool-gitlab`(npm 发布需要启用 **2FA bypass** 的细粒度访问令牌,或 trusted publishing)。
+2. `npm run build`,然后 `npm publish --access public`。
+3. 给 GitHub 仓库添加 [`dsh-plugin`](https://github.com/topics/dsh-plugin) topic,便于生态发现。
+
+## License
+
+[MIT](LICENSE)

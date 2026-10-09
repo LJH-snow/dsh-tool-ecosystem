@@ -1,0 +1,59 @@
+name: release-check
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-check:
+    name: release-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out aggregate workspace
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Prepare plugin workspace
+        run: node scripts/ci/prepare-plugin-workspace.mjs
+
+      - name: Install plugin dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for plugin in dsh-tool-*/; do
+            if [[ -f "${plugin}package.json" ]]; then
+              echo "Installing ${plugin%/}"
+              (cd "$plugin" && npm ci --ignore-scripts)
+            fi
+          done
+
+      - name: Run security scans and full release matrix
+        run: node scripts/release-check.mjs --strict-output
+
+      - name: Upload release-check reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-check-${{ github.run_id }}
+          path: release/*.json
+          if-no-files-found: error
+
+      - name: Write release-check summary
+        if: always()
+        shell: bash
+        run: node scripts/ci/write-release-summary.mjs >> "$GITHUB_STEP_SUMMARY"

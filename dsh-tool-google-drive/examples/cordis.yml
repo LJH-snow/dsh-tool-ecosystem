@@ -1,0 +1,18 @@
+# Generate refresh credentials with:
+# npm run auth:google -- --client-id '<oauth-client-id>' --client-secret '<oauth-client-secret>'
+#
+# Example dsh composition config for dsh-tool-google-drive.
+# Recommended scopes for full read-only coverage:
+# - https://www.googleapis.com/auth/drive.readonly
+# - https://www.googleapis.com/auth/drive.metadata.readonly
+# - https://www.googleapis.com/auth/documents.readonly
+# - https://www.googleapis.com/auth/spreadsheets.readonly
+
+- name: 'github:LJH-snow/dsh-tool-google-drive'
+  config:
+    accessToken: 'ya29.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+    # or use OAuth refresh credentials:
+    # clientId: 'xxxxxxxx.apps.googleusercontent.com'
+    # clientSecret: 'xxxxxxxxxxxxxxxxxxxx'
+    # refreshToken: '1//xxxxxxxxxxxxxxxxxxxxxxxx'
+    # timeoutMs: 15000

@@ -1,0 +1,15 @@
+# dsh-tool-linear composition example
+# Load this plugin in a DeepSeek Harness composition config.
+#
+# There are two ways to load it:
+# 1. From GitHub before npm publishing:
+- name: 'github:LJH-snow/dsh-tool-linear'
+# 2. After npm publishing:
+# - name: '@libai168/dsh-tool-linear'
+  config:
+    # Linear personal API key. Create one under Settings > Security & access > Personal API keys.
+    apiKey: 'lin_api_xxx'
+    # Optional GraphQL endpoint override (default https://api.linear.app/graphql)
+    # baseUrl: 'https://api.linear.app/graphql'
+    # Optional request timeout in ms (default 15000)
+    # timeoutMs: 15000

@@ -1,0 +1,10 @@
+# Example dsh composition config for dsh-tool-dockerhub.
+# Public search works without credentials. Add username + personal access token
+# for private namespace repositories and authenticated rate-limit information.
+
+- name: 'github:LJH-snow/dsh-tool-dockerhub'
+  config:
+    # username: 'docker-user'
+    # personalAccessToken: 'dckr_pat_xxxxxxxxxxxxxxxxx'
+    # baseUrl: 'https://hub.docker.com'
+    # timeoutMs: 15000

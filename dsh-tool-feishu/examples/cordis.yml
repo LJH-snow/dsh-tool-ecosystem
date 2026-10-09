@@ -1,0 +1,11 @@
+# Example dsh composition config for dsh-tool-feishu.
+#
+# Required: appId + appSecret (Feishu Open Platform app credentials).
+# Optional: baseUrl for private deployment or Lark international.
+
+- name: 'github:LJH-snow/dsh-tool-feishu'
+  config:
+    appId: 'cli_xxxxxxxxxxxxxxxx'
+    appSecret: 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+    # baseUrl: 'https://open.larksuite.com/open-apis'  # Lark international
+    # timeoutMs: 15000
