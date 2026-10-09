@@ -154,6 +154,39 @@ describe('KubernetesClient', () => {
     expect(Buffer.byteLength(result, 'utf8')).toBeLessThanOrEqual(80)
   })
 
+  it('redacts extended credential fields and keeps UTF-8 byte limits exact', async () => {
+    const core = {
+      readNamespacedPodLog: vi.fn(async () => [
+        'secureJsonData:',
+        '  providerSpecificField: raw-log-secret',
+        'secureJsonData: { providerSpecificField: inline-log-secret }',
+        'secureJsonData: |-',
+        '  scalar-log-secret',
+        'httpHeaderValue1: header-secret',
+        'tlsAuth: tls-secret',
+        'password: "value with spaces"',
+        'url=https://user:pass@example.test/path',
+      ].join('\n')),
+    }
+    const client = new KubernetesClient({
+      coreV1Api: core,
+      objectApi: objectApi(),
+      logMaxBytes: 1024,
+    })
+
+    const result = await client.readPodLog('team', 'api-0')
+
+    expect(result).not.toMatch(/raw-log-secret|inline-log-secret|scalar-log-secret|header-secret|tls-secret|value with spaces|user:pass/)
+
+    const unicodeClient = new KubernetesClient({
+      coreV1Api: { readNamespacedPodLog: vi.fn(async () => '中文日志') },
+      objectApi: objectApi(),
+      logMaxBytes: 1,
+    })
+    const unicodeResult = await unicodeClient.readPodLog('team', 'api-0')
+    expect(Buffer.byteLength(unicodeResult, 'utf8')).toBeLessThanOrEqual(1)
+  })
+
   it('times out a pod log request in the client', async () => {
     const core = {
       readNamespacedPodLog: vi.fn(() => new Promise<string>(() => {})),
@@ -193,6 +226,55 @@ metadata:
   name: sandbox
 `)
     expect(result).toMatchObject({ ok: true, applied: 1 })
+  })
+
+  it('keeps namespaced RBAC manifests inside the namespace allowlist', async () => {
+    const api = objectApi({
+      create: vi.fn(async spec => spec),
+    })
+    const client = new KubernetesClient({
+      allowWrite: true,
+      writeNamespaces: ['team'],
+      writeKinds: ['Role', 'RoleBinding'],
+      namespace: 'team',
+      objectApi: api,
+    })
+
+    expect(client.canWriteResource('other', 'Role')).toBe(false)
+    expect(client.canWriteResource('team', 'Role')).toBe(true)
+    expect(client.canWriteResource('other', 'RoleBinding')).toBe(false)
+
+    const result = await client.applyManifest(`
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: reader
+  namespace: other
+rules: []
+`)
+
+    expect(result).toMatchObject({ ok: false })
+    expect(String(result.reason)).toMatch(/namespace/i)
+    expect(api.create).not.toHaveBeenCalled()
+  })
+
+  it('requires an explicit namespace for unknown kinds when a namespace allowlist is configured', async () => {
+    const api = objectApi()
+    const client = new KubernetesClient({
+      allowWrite: true,
+      writeNamespaces: ['team'],
+      writeKinds: ['Widget'],
+      namespace: 'team',
+      objectApi: api,
+    })
+
+    expect(client.canWriteResource('', 'Widget')).toBe(false)
+    expect(client.canWriteResource('team', 'Widget')).toBe(true)
+    const result = await client.applyManifest('apiVersion: example.test/v1\nkind: Widget\nmetadata:\n  name: custom\n')
+
+    expect(result).toMatchObject({ ok: false })
+    expect(String(result.reason)).toMatch(/namespace/i)
+    expect(api.create).not.toHaveBeenCalled()
   })
 
   it('adds the plugin default namespace to known namespaced manifest objects', async () => {

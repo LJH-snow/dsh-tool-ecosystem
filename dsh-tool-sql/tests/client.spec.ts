@@ -82,6 +82,35 @@ describe('assertReadOnly', () => {
     expect(() => assertReadOnly("SELECT nextval/**/('users_id_seq')")).toThrow(SqlError)
     expect(() => assertReadOnly('SELECT * INTO temporary audit_copy FROM audit_log')).toThrow(SqlError)
   })
+
+  it('rejects dialect-ambiguous escaped quotes that can hide a second statement', () => {
+    expect(() => assertReadOnly("SELECT 'abc\\'; SELECT 2")).toThrow(SqlError)
+    expect(() => assertReadOnly("SELECT '{\"a\":1}'::jsonb #> '{a}'; SELECT 2")).toThrow(SqlError)
+  })
+
+  it('rejects quoted dangerous function names and additional side-effect functions', () => {
+    for (const sql of [
+      'SELECT "pg_sleep"(1)',
+      'SELECT pg_advisory_lock_shared(1)',
+      'SELECT pg_try_advisory_lock(1)',
+      'SELECT pg_try_advisory_xact_lock(1)',
+      'SELECT pg_advisory_unlock_shared(1)',
+      'SELECT pg_stat_reset()',
+      'SELECT pg_log_backend_memory_contexts(1)',
+      'SELECT lo_create(123)',
+      'SELECT RELEASE_ALL_LOCKS()',
+    ]) {
+      expect(() => assertReadOnly(sql), sql).toThrow(SqlError)
+    }
+  })
+
+  it('rejects quoted SELECT INTO targets', () => {
+    expect(() => assertReadOnly('SELECT * INTO "audit" FROM audit_log')).toThrow(SqlError)
+    expect(() => assertReadOnly('SELECT * INTO `audit` FROM audit_log')).toThrow(SqlError)
+    expect(() => assertReadOnly('SELECT * INTO db.audit FROM audit_log')).toThrow(SqlError)
+    expect(() => assertReadOnly('SELECT * INTO public."audit" FROM audit_log')).toThrow(SqlError)
+    expect(() => assertReadOnly('SELECT * INTO "public"."audit" FROM audit_log')).toThrow(SqlError)
+  })
 })
 
 function mockDriver(overrides: Partial<Driver> = {}): Driver {

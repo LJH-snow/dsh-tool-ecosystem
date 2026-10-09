@@ -23,11 +23,17 @@ if (!Array.isArray(manifest.repositories) || manifest.repositories.length === 0)
   process.exit()
 }
 
+const manifestNames = new Set()
 for (const entry of manifest.repositories) {
   if (!/^dsh-tool-[a-z0-9-]+$/.test(entry.name)) {
     fail('invalid plugin name in repository manifest: ' + entry.name)
     continue
   }
+  if (manifestNames.has(entry.name)) {
+    fail('duplicate plugin name in repository manifest: ' + entry.name)
+    continue
+  }
+  manifestNames.add(entry.name)
 
   const target = path.join(root, entry.name)
   if (fs.existsSync(path.join(target, 'package.json'))) continue
@@ -54,6 +60,14 @@ for (const entry of manifest.repositories) {
     stdio: 'inherit',
   })
   if (result.status !== 0) fail('clone failed for ' + entry.name)
+}
+
+// The release check scans every checked-in dsh-tool-* directory. Refuse an
+// unregistered package so a new plugin cannot bypass the repository manifest.
+for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+  if (!entry.isDirectory() || !/^dsh-tool-[a-z0-9-]+$/.test(entry.name)) continue
+  if (!fs.existsSync(path.join(root, entry.name, 'package.json'))) continue
+  if (!manifestNames.has(entry.name)) fail('plugin directory is not registered: ' + entry.name)
 }
 
 if (process.exitCode) process.exit(process.exitCode)
