@@ -1,0 +1,4 @@
+- name: '@libai168/dsh-tool-anthropic'
+  config:
+    # Set ANTHROPIC_API_KEY in the environment or configure a secret manager.
+    timeoutMs: 30000

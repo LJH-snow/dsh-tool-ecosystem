@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-10-09T07:42:23.353Z",
-  "totalPlugins": 32,
-  "totalTools": 601,
+  "generatedAt": "2026-10-11T04:54:29.452Z",
+  "totalPlugins": 34,
+  "totalTools": 607,
   "plugins": [
     {
       "name": "dsh-tool-airtable",
@@ -16,6 +16,17 @@
         "airtable_list_records",
         "airtable_update_record",
         "airtable_verify_token"
+      ]
+    },
+    {
+      "name": "dsh-tool-anthropic",
+      "packageName": "@libai168/dsh-tool-anthropic",
+      "version": "0.1.0",
+      "path": "dsh-tool-anthropic",
+      "tools": [
+        "anthropic_auth_test",
+        "anthropic_messages_create",
+        "anthropic_models_list"
       ]
     },
     {
@@ -667,6 +678,17 @@
         "notion_query_database",
         "notion_search_pages",
         "notion_update_page"
+      ]
+    },
+    {
+      "name": "dsh-tool-openai",
+      "packageName": "@libai168/dsh-tool-openai",
+      "version": "0.1.0",
+      "path": "dsh-tool-openai",
+      "tools": [
+        "openai_auth_test",
+        "openai_models_list",
+        "openai_responses_create"
       ]
     },
     {
