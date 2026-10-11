@@ -1,11 +1,17 @@
 {
-  "generatedAt": "2026-10-09T07:42:23.350Z",
+  "generatedAt": "2026-10-11T04:54:29.450Z",
   "plugins": [
     {
       "name": "dsh-tool-airtable",
       "packageName": "@libai168/dsh-tool-airtable",
       "version": "0.2.0",
       "path": "dsh-tool-airtable"
+    },
+    {
+      "name": "dsh-tool-anthropic",
+      "packageName": "@libai168/dsh-tool-anthropic",
+      "version": "0.1.0",
+      "path": "dsh-tool-anthropic"
     },
     {
       "name": "dsh-tool-aws",
@@ -144,6 +150,12 @@
       "packageName": "@libai168/dsh-tool-notion",
       "version": "0.4.0",
       "path": "dsh-tool-notion"
+    },
+    {
+      "name": "dsh-tool-openai",
+      "packageName": "@libai168/dsh-tool-openai",
+      "version": "0.1.0",
+      "path": "dsh-tool-openai"
     },
     {
       "name": "dsh-tool-pagerduty",

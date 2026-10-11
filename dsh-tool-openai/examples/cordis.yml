@@ -1,0 +1,6 @@
+# dsh-tool-openai composition example
+- name: '@libai168/dsh-tool-openai'
+  config:
+    # Prefer OPENAI_API_KEY in the process environment or a secret manager.
+    apiKey: 'sk-...'
+    # timeoutMs: 30000

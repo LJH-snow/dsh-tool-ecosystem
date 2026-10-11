@@ -26,6 +26,8 @@
     { "name": "dsh-tool-monitoring", "repository": "https://github.com/LJH-snow/dsh-tool-monitoring.git" },
     { "name": "dsh-tool-n8n", "repository": "https://github.com/LJH-snow/dsh-tool-n8n.git" },
     { "name": "dsh-tool-notion", "repository": "https://github.com/LJH-snow/dsh-tool-notion.git" },
+    { "name": "dsh-tool-anthropic", "repository": "https://github.com/LJH-snow/dsh-tool-anthropic.git" },
+    { "name": "dsh-tool-openai", "repository": "https://github.com/LJH-snow/dsh-tool-openai.git" },
     { "name": "dsh-tool-pagerduty", "repository": "https://github.com/LJH-snow/dsh-tool-pagerduty.git" },
     { "name": "dsh-tool-redis", "repository": "https://github.com/LJH-snow/dsh-tool-redis.git" },
     { "name": "dsh-tool-sentry", "repository": "https://github.com/LJH-snow/dsh-tool-sentry.git" },

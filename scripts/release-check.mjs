@@ -60,7 +60,7 @@ function scanCredentials(inventory) {
   const findings = []
   const patterns = [
     /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
-    /(?:sk_(?:live|test)_|rk_(?:live|test)_|shpat_|ghp_|github_pat_|xox[abprs]-|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{20,}|ya29\.[0-9A-Za-z_-]{20,}|npm_[A-Za-z0-9]{20,})/,
+    /(?:sk_(?:live|test)_|sk-ant-[A-Za-z0-9_-]{20,}|rk_(?:live|test)_|shpat_|ghp_|github_pat_|xox[abprs]-|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{20,}|ya29\.[0-9A-Za-z_-]{20,}|npm_[A-Za-z0-9]{20,})/,
     /\bBearer\s+[A-Za-z0-9._-]{32,}/i,
     /(?:accessToken|apiKey|clientSecret|password|privateKey)\s*[:=]\s*['"][^'"]{32,}['"]/
   ]
@@ -81,7 +81,7 @@ function scanCredentials(inventory) {
 
 const allowedHosts = new Set([
   'api.airtable.com', 'api.cloudflare.com', 'api.figma.com', 'api.firecrawl.dev', 'api.github.com', 'api.linear.app', 'api.notion.com', 'api.pagerduty.com',
-  'context7.com', 'discord.com', 'gitlab.com', 'gmail.googleapis.com', 'graph.microsoft.com', 'hub.docker.com', 'open.feishu.cn', 'open.larksuite.com',
+  'api.anthropic.com', 'api.openai.com', 'context7.com', 'discord.com', 'gitlab.com', 'gmail.googleapis.com', 'graph.microsoft.com', 'hub.docker.com', 'open.feishu.cn', 'open.larksuite.com',
   'oauth2.googleapis.com', 'www.googleapis.com', 'docs.googleapis.com', 'sheets.googleapis.com', 'api.stripe.com', 'api.shopify.com', 'sentry.io', 'slack.com',
 ])
 

@@ -1,9 +1,17 @@
 {
-  "generatedAt": "2026-10-09T07:44:00.106Z",
+  "generatedAt": "2026-10-11T04:56:05.126Z",
   "plugins": [
     {
       "plugin": "dsh-tool-airtable",
       "version": "0.2.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-anthropic",
+      "version": "0.1.0",
       "typecheck": true,
       "build": true,
       "pack": true,
@@ -188,6 +196,14 @@
     {
       "plugin": "dsh-tool-notion",
       "version": "0.4.0",
+      "typecheck": true,
+      "build": true,
+      "pack": true,
+      "outputs": []
+    },
+    {
+      "plugin": "dsh-tool-openai",
+      "version": "0.1.0",
       "typecheck": true,
       "build": true,
       "pack": true,
